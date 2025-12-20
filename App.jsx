@@ -3,16 +3,16 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { 
   getFirestore, collection, addDoc, query, orderBy, 
-  onSnapshot, serverTimestamp 
+  onSnapshot, serverTimestamp, where 
 } from 'firebase/firestore';
 import { 
   Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
   UserCheck, ClipboardList, AlertTriangle, Camera, 
   Image as ImageIcon, X, RefreshCw, Zap, User, Filter, Share2, 
-  CheckSquare, AlertCircle, WifiOff, Database, Lock 
+  CheckSquare, AlertCircle, WifiOff, Calendar, Database, Lock, Signal 
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE ---
+// --- CONFIGURACIÓN DE FIREBASE (TUS DATOS REALES) ---
 const firebaseConfig = {
   apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
   authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
@@ -27,9 +27,9 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = 'bsf-la-paz-v1';
-const COLLECTION_PATH = 'reports_v3'; // Ruta única para no mezclar datos
+const COLLECTION_PATH = 'reports_v3'; // Ruta Maestra
 
-// --- Constantes ---
+// --- Constantes del Sistema ---
 const AREAS = {
   FINANCIERA: "Área Financiera y Bancaria",
   VIP: "Área Seguridad VIP",
@@ -85,34 +85,38 @@ const EXCEPCIONES_AREA = {
 
 const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE LA SOCIEDAD.";
 
-// --- Utilidades de Fecha (SOLUCIÓN DEL PROBLEMA) ---
-// Usamos la fecha del dispositivo local para TODO.
-const obtenerFechaLocal = (dateObj = new Date()) => {
-  const year = dateObj.getFullYear();
-  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const day = String(dateObj.getDate()).padStart(2, '0');
+// --- Utilidades ---
+const obtenerFechaString = () => {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const obtenerHoraLegible = (timestamp, horaReferencia) => {
+  if (timestamp) {
+    return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
+      hour: '2-digit', minute: '2-digit', hour12: false
+    });
+  }
+  if (horaReferencia) {
+    if (horaReferencia.length <= 5) return horaReferencia;
+    const partes = horaReferencia.split(' ');
+    return partes.length > 1 ? partes[1] : horaReferencia;
+  }
+  return "...";
 };
 
 const formatearHoraSimple = (fecha) => {
   return fecha.getHours().toString().padStart(2, '0') + ':' + fecha.getMinutes().toString().padStart(2, '0');
 };
 
-const obtenerHoraLegible = (timestamp, horaReferencia) => {
-  // Prioridad a la hora guardada manualmente (referencia) para evitar saltos de zona horaria
-  if (horaReferencia && horaReferencia.includes(':')) return horaReferencia;
-  if (timestamp) {
-    return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
-      hour: '2-digit', minute: '2-digit', hour12: false
-    });
-  }
-  return "...";
-};
-
 const esHorarioPermitido = (tipo) => {
   if (tipo === 'extraordinario') return { permitido: true };
   const ahora = new Date();
   const tiempoActual = ahora.getHours() * 60 + ahora.getMinutes(); 
+
   if (tipo === 'apertura') {
     if (tiempoActual >= 540 && tiempoActual <= 560) return { permitido: true };
     return { permitido: false, mensaje: "Horario Apertura (09:00 - 09:20)" };
@@ -154,16 +158,22 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('login'); 
   const [loading, setLoading] = useState(true);
+  const [conectado, setConectado] = useState(false);
 
   useEffect(() => {
     const initAuth = async () => {
-      try { await signInAnonymously(auth); } 
-      catch (error) { console.error("Auth:", error); setLoading(false); }
+      try {
+        await signInAnonymously(auth);
+      } catch (error) { 
+        console.error("Auth:", error); 
+        setLoading(false);
+      }
     };
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
       setLoading(false); 
+      setConectado(!!u);
     });
     return () => unsubscribe();
   }, []);
@@ -183,7 +193,10 @@ export default function App() {
               <p className="text-[10px] text-slate-300">Sistema de Parte Diario</p>
             </div>
           </div>
-          {view !== 'login' && <button onClick={() => setView('login')} className="text-xs bg-slate-800 p-2 rounded"><LogOut size={16}/></button>}
+          <div className="flex items-center gap-2">
+             <div className={`w-2 h-2 rounded-full ${conectado ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} title={conectado ? "Conectado" : "Desconectado"}></div>
+             {view !== 'login' && <button onClick={() => setView('login')} className="text-xs bg-slate-800 p-2 rounded"><LogOut size={16}/></button>}
+          </div>
         </div>
       </header>
 
@@ -240,7 +253,7 @@ function ReportForm({ user }) {
   const [misReportes, setMisReportes] = useState([]); 
   const [horaActual, setHoraActual] = useState(new Date());
   
-  const [estadoHorario, setEstadoHorario] = useState({ permitido: true });
+  const [estadoHorario, setEstadoHorario] = useState({ enHorario: true });
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -275,14 +288,13 @@ function ReportForm({ user }) {
     }
   }, [jefatura, area, tipo, misReportes]);
 
-  // LEER DATOS CON FILTRO LOCAL (SOLUCIÓN PERSISTENCIA)
+  // LEER DATOS CON FILTRO LOCAL
   useEffect(() => {
-    // Traemos TODA la colección y filtramos en el celular para evitar errores de fecha/zona horaria
+    // Consulta plana a TODA la colección para garantizar lectura
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), orderBy('timestamp', 'desc'));
     const unsubscribe = onSnapshot(q, (snap) => {
-      const hoyString = obtenerFechaLocal(); // Fecha del celular: "2024-05-22"
+      const hoyString = obtenerFechaString();
       const todos = snap.docs.map(d => d.data());
-      // Filtramos aquí: solo lo que tenga la fecha de hoy (texto exacto)
       const misDelDia = todos.filter(d => d.fecha_string === hoyString && d.jefatura === jefatura);
       setMisReportes(misDelDia);
     });
@@ -301,14 +313,12 @@ function ReportForm({ user }) {
   const enviarParte = async () => {
     if (!navigator.onLine) { alert("Sin internet."); return; }
     if (!grado || !nombre || !foto) { alert("Faltan datos obligatorios."); return; }
-    
-    // BLOQUEO DE DUPLICADOS REAL (Ya validado con la lista local)
-    if (yaReportado) { alert("Ya registrado hoy."); return; }
+    if (yaReportado) { alert("Esta entidad ya tiene reporte hoy."); return; }
 
     setEnviando(true);
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
     const horaRef = formatearHoraSimple(new Date()); 
-    const fechaString = obtenerFechaLocal(); // Guardamos "2024-05-22" fijo
+    const fechaString = obtenerFechaString(); // CLAVE MAESTRA
 
     const docData = {
         area: areaFinal, 
@@ -320,7 +330,7 @@ function ReportForm({ user }) {
         grado, 
         nombre,
         horaReferencia: horaRef,
-        fecha_string: fechaString, // ESTA ES LA CLAVE DE LA PERSISTENCIA
+        fecha_string: fechaString, 
         timestamp: serverTimestamp(),
         userId: user.uid
     };
@@ -408,12 +418,12 @@ function ReportForm({ user }) {
 
 function SupervisorDashboard({ user }) {
   const [reportes, setReportes] = useState([]);
-  const [fecha, setFecha] = useState(obtenerFechaLocal());
+  const [fecha, setFecha] = useState(obtenerFechaString());
   const [filtro, setFiltro] = useState('todos');
-  const [verTodoHistorial, setVerTodoHistorial] = useState(false);
   const [modalFoto, setModalFoto] = useState(null);
 
   useEffect(() => {
+    // Consulta maestra: Trae todo y ordena por timestamp
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), orderBy('timestamp', 'desc'));
     const unsubscribe = onSnapshot(q, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
@@ -422,25 +432,25 @@ function SupervisorDashboard({ user }) {
     return () => unsubscribe();
   }, []);
 
-  // FILTRO SEGURO EN MEMORIA
+  // FILTRO SEGURO EN MEMORIA: Muestra TODOS los reportes de la historia si se selecciona la fecha correspondiente
+  // OJO: Si el usuario quiere ver TODO el historial, quitamos el filtro de fecha
   const reportesVisibles = reportes.filter(r => {
-     if (!verTodoHistorial && r.fecha_string !== fecha) return false;
+     // Si la fecha coincide con la seleccionada
+     if (r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
      return true;
   });
 
+  // Agrupar visualmente por fechas si decidiéramos mostrar todo el historial, 
+  // pero por ahora mantenemos el filtro por día para que el Supervisor no se abrume.
+  
   const copiar = (texto) => {
     const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
     alert("Copiado.");
   };
 
   const generarResumen = () => {
-    let titulo = "PARTE GENERAL";
-    if (filtro === 'apertura') titulo = "REPORTE DE APERTURA DE ENTIDADES";
-    else if (filtro === 'cierre') titulo = "REPORTE DE CIERRE DE ENTIDADES";
-    else if (filtro === 'extraordinario') titulo = "REPORTES EXTRAORDINARIOS";
-
-    let t = `*${titulo} - ${fecha}*\n\n`;
+    let t = `*REPORTE BSF - ${fecha}*\n\n`;
     [AREAS.FINANCIERA, AREAS.VIP, AREAS.INSTALACIONES, AREAS.ETV].forEach(areaName => {
         const reportesArea = reportesVisibles.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === areaName);
         if(reportesArea.length === 0 && filtro !== 'todos') return;
@@ -462,14 +472,11 @@ function SupervisorDashboard({ user }) {
         }
         t += "\n";
     });
-    t += `*TOTAL REPORTES RECIBIDOS:* ${reportesVisibles.length}\n"${LEMA}"`;
+    t += `"${LEMA}"`;
     copiar(t);
   };
 
-  // Cálculo de faltantes usando jefaturas (20 oficiales)
-  const jefaturasTotales = new Set(Object.values(ASIGNACIONES).flatMap(area => Object.keys(area)));
-  const jefaturasReportadas = new Set(reportesVisibles.map(r => r.jefatura));
-  const oficialesFaltantes = [...jefaturasTotales].filter(j => !jefaturasReportadas.has(j));
+  const faltantes = Object.values(ASIGNACIONES).reduce((acc, curr) => acc + Object.values(curr).flat().length, 0) - reportesVisibles.length;
 
   return (
     <div className="space-y-4 animate-in fade-in">
@@ -478,12 +485,12 @@ function SupervisorDashboard({ user }) {
       <div className="bg-white p-4 rounded-xl shadow-md border-l-4 border-emerald-600">
          <h2 className="font-bold text-lg text-slate-800">Panel de Control</h2>
          <div className="flex flex-col gap-2 mt-2">
-            <div className="flex gap-2">
-               <button onClick={()=>setVerTodoHistorial(!verTodoHistorial)} className={`p-2 border rounded ${verTodoHistorial ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}><Database size={16}/></button>
-               <input type="date" className="p-2 border rounded text-xs flex-grow font-bold" value={fecha} onChange={e=>setFecha(e.target.value)} disabled={verTodoHistorial}/>
+            <div className="flex gap-2 items-center">
+               <span className="text-xs font-bold uppercase text-slate-500">Fecha:</span>
+               <input type="date" className="p-2 border rounded text-xs flex-grow font-bold" value={fecha} onChange={e=>setFecha(e.target.value)}/>
             </div>
             <select className="p-2 border rounded text-xs uppercase font-bold" value={filtro} onChange={e=>setFiltro(e.target.value)}>
-               <option value="todos">VER TODOS</option>
+               <option value="todos">VER TODOS LOS REPORTES DE LA FECHA</option>
                <option value="apertura">SOLO APERTURA</option>
                <option value="cierre">SOLO CIERRE</option>
                <option value="extraordinario">SOLO NOVEDADES</option>
@@ -492,13 +499,6 @@ function SupervisorDashboard({ user }) {
          </div>
          <p className="text-[10px] text-right mt-2 text-slate-400">Total visibles: {reportesVisibles.length}</p>
       </div>
-      
-      {(filtro === 'apertura' || filtro === 'cierre') && (
-        <div className={`p-4 rounded-xl shadow border-l-4 ${oficialesFaltantes.length > 0 ? 'bg-red-50 border-red-500 text-red-800' : 'bg-green-50 border-green-500 text-green-800'}`}>
-            <p className="font-bold text-xs uppercase">Faltan {oficialesFaltantes.length} de {jefaturasTotales.size} Oficiales</p>
-            {oficialesFaltantes.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{oficialesFaltantes.map(j => <span key={j} className="text-[9px] bg-white border px-1 rounded">{j}</span>)}</div>}
-        </div>
-      )}
 
       <div className="space-y-3">
          {reportesVisibles.map(r => (
@@ -518,7 +518,7 @@ function SupervisorDashboard({ user }) {
                <button onClick={()=>copiar(`*${r.tipo.toUpperCase()}*\n${r.entidad}\n${r.novedad}\n${r.horaReferencia}`)} className="text-emerald-600"><Share2 size={18}/></button>
             </div>
          ))}
-         {reportesVisibles.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">No hay datos para mostrar.</div>}
+         {reportesVisibles.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">No hay datos para la fecha seleccionada.</div>}
       </div>
     </div>
   );
