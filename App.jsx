@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { 
   getFirestore, collection, addDoc, query, orderBy, 
   onSnapshot, serverTimestamp, where 
@@ -9,10 +9,10 @@ import {
   Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
   UserCheck, ClipboardList, AlertTriangle, Camera, 
   Image as ImageIcon, X, RefreshCw, Zap, User, Filter, Share2, 
-  CheckSquare, AlertCircle, WifiOff, Calendar, Database, Lock, Signal 
+  CheckSquare, AlertCircle, WifiOff, Database, Lock 
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE (TUS DATOS REALES) ---
+// --- TUS CREDENCIALES REALES ---
 const firebaseConfig = {
   apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
   authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
@@ -26,10 +26,13 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = 'bsf-la-paz-v1';
-const COLLECTION_PATH = 'reports_v3'; // Ruta Maestra
+const appId = 'bsf-la-paz-v1'; 
 
-// --- Constantes del Sistema ---
+// RUTA SIMPLE PARA EVITAR ERRORES DE PERMISOS COMPLEJOS
+// Usamos la ruta estándar requerida por la plataforma
+const COLLECTION_PATH = 'reports_v4_final'; 
+
+// --- Constantes ---
 const AREAS = {
   FINANCIERA: "Área Financiera y Bancaria",
   VIP: "Área Seguridad VIP",
@@ -94,38 +97,8 @@ const obtenerFechaString = () => {
   return `${year}-${month}-${day}`;
 };
 
-const obtenerHoraLegible = (timestamp, horaReferencia) => {
-  if (timestamp) {
-    return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
-      hour: '2-digit', minute: '2-digit', hour12: false
-    });
-  }
-  if (horaReferencia) {
-    if (horaReferencia.length <= 5) return horaReferencia;
-    const partes = horaReferencia.split(' ');
-    return partes.length > 1 ? partes[1] : horaReferencia;
-  }
-  return "...";
-};
-
 const formatearHoraSimple = (fecha) => {
   return fecha.getHours().toString().padStart(2, '0') + ':' + fecha.getMinutes().toString().padStart(2, '0');
-};
-
-const esHorarioPermitido = (tipo) => {
-  if (tipo === 'extraordinario') return { permitido: true };
-  const ahora = new Date();
-  const tiempoActual = ahora.getHours() * 60 + ahora.getMinutes(); 
-
-  if (tipo === 'apertura') {
-    if (tiempoActual >= 540 && tiempoActual <= 560) return { permitido: true };
-    return { permitido: false, mensaje: "Horario Apertura (09:00 - 09:20)" };
-  }
-  if (tipo === 'cierre') {
-    if (tiempoActual >= 960 && tiempoActual <= 980) return { permitido: true };
-    return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
-  }
-  return { permitido: true };
 };
 
 const procesarImagenSegura = (file) => {
@@ -158,14 +131,15 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('login'); 
   const [loading, setLoading] = useState(true);
-  const [conectado, setConectado] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
     const initAuth = async () => {
       try {
         await signInAnonymously(auth);
       } catch (error) { 
-        console.error("Auth:", error); 
+        console.error("Auth Error:", error); 
+        setErrorMsg(`Error de Autenticación: ${error.message}`);
         setLoading(false);
       }
     };
@@ -173,12 +147,9 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
       setLoading(false); 
-      setConectado(!!u);
     });
     return () => unsubscribe();
   }, []);
-
-  const handleReconnect = () => window.location.reload();
 
   if (loading) return <div className="flex h-screen items-center justify-center bg-slate-900 text-white"><RefreshCw className="animate-spin" /></div>;
 
@@ -193,22 +164,14 @@ export default function App() {
               <p className="text-[10px] text-slate-300">Sistema de Parte Diario</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-             <div className={`w-2 h-2 rounded-full ${conectado ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} title={conectado ? "Conectado" : "Desconectado"}></div>
-             {view !== 'login' && <button onClick={() => setView('login')} className="text-xs bg-slate-800 p-2 rounded"><LogOut size={16}/></button>}
-          </div>
+          {view !== 'login' && <button onClick={() => setView('login')} className="text-xs bg-slate-800 p-2 rounded"><LogOut size={16}/></button>}
         </div>
       </header>
 
+      {errorMsg && <div className="bg-red-600 text-white p-2 text-center text-xs font-bold">{errorMsg}</div>}
+
       <main className="flex-grow max-w-4xl mx-auto w-full p-4 pb-20">
         {view === 'login' && <LoginScreen setView={setView} />}
-        {view !== 'login' && !user && (
-           <div className="p-8 text-center bg-white rounded-xl shadow">
-             <WifiOff className="mx-auto text-red-500 mb-4" size={48}/>
-             <h3 className="font-bold text-lg">Sin Conexión</h3>
-             <button onClick={handleReconnect} className="mt-4 bg-blue-900 text-white px-6 py-2 rounded-lg">Reintentar</button>
-           </div>
-        )}
         {view === 'form' && user && <ReportForm user={user} />}
         {view === 'dashboard' && user && <SupervisorDashboard user={user} />}
       </main>
@@ -223,7 +186,6 @@ function LoginScreen({ setView }) {
         <Shield size={60} className="text-blue-900 mx-auto mb-4" />
         <h2 className="text-2xl font-black text-slate-900 uppercase">Bienvenido</h2>
         <div className="h-1 w-20 bg-yellow-500 mx-auto my-2"></div>
-        
         <div className="space-y-4">
           <button onClick={() => setView('form')} className="w-full p-4 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-xl flex items-center gap-4 transition-all group border border-blue-100">
             <div className="bg-white p-2 rounded-full group-hover:bg-blue-800"><UserCheck className="text-blue-900 group-hover:text-white"/></div>
@@ -245,22 +207,18 @@ function ReportForm({ user }) {
   const [entidad, setEntidad] = useState('');
   const [tipo, setTipo] = useState('apertura');
   const [novedad, setNovedad] = useState('SIN NOVEDAD');
-  
   const [grado, setGrado] = useState(localStorage.getItem('bsf_grado') || '');
   const [nombre, setNombre] = useState(localStorage.getItem('bsf_nombre') || '');
   const [foto, setFoto] = useState(null); 
   const [enviando, setEnviando] = useState(false);
-  const [misReportes, setMisReportes] = useState([]); 
+  const [misReportes, setMisReportes] = useState([]);
   const [horaActual, setHoraActual] = useState(new Date());
-  
-  const [estadoHorario, setEstadoHorario] = useState({ enHorario: true });
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    const t = setInterval(() => { setHoraActual(new Date()); setEstadoHorario(esHorarioPermitido(tipo)); }, 1000);
-    setEstadoHorario(esHorarioPermitido(tipo));
+    const t = setInterval(() => setHoraActual(new Date()), 1000);
     return () => clearInterval(t);
-  }, [tipo]);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('bsf_grado', grado);
@@ -288,15 +246,18 @@ function ReportForm({ user }) {
     }
   }, [jefatura, area, tipo, misReportes]);
 
-  // LEER DATOS CON FILTRO LOCAL
+  // LECTURA DE BASE DE DATOS
   useEffect(() => {
-    // Consulta plana a TODA la colección para garantizar lectura
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), orderBy('timestamp', 'desc'));
+    // Usamos el path correcto para persistencia: /artifacts/{appId}/public/data/{collectionName}
+    const q = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH);
     const unsubscribe = onSnapshot(q, (snap) => {
       const hoyString = obtenerFechaString();
       const todos = snap.docs.map(d => d.data());
-      const misDelDia = todos.filter(d => d.fecha_string === hoyString && d.jefatura === jefatura);
-      setMisReportes(misDelDia);
+      // Filtramos en memoria
+      setMisReportes(todos.filter(d => d.fecha_string === hoyString && d.jefatura === jefatura));
+    }, (error) => {
+        console.error("Error leyendo DB:", error);
+        alert(`Error de lectura: ${error.message}. Verifica tu internet.`);
     });
     return () => unsubscribe();
   }, [jefatura]);
@@ -313,57 +274,39 @@ function ReportForm({ user }) {
   const enviarParte = async () => {
     if (!navigator.onLine) { alert("Sin internet."); return; }
     if (!grado || !nombre || !foto) { alert("Faltan datos obligatorios."); return; }
-    if (yaReportado) { alert("Esta entidad ya tiene reporte hoy."); return; }
+    if (yaReportado) { alert("Ya registrado hoy."); return; }
 
     setEnviando(true);
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
     const horaRef = formatearHoraSimple(new Date()); 
-    const fechaString = obtenerFechaString(); // CLAVE MAESTRA
+    const fechaString = obtenerFechaString();
 
     const docData = {
-        area: areaFinal, 
-        jefatura, 
-        entidad, 
-        tipo, 
-        novedad, 
-        foto, 
-        grado, 
-        nombre,
+        area: areaFinal, jefatura, entidad, tipo, novedad, foto, grado, nombre,
         horaReferencia: horaRef,
-        fecha_string: fechaString, 
+        fecha_string: fechaString, // Clave de persistencia
         timestamp: serverTimestamp(),
         userId: user.uid
     };
 
-    const dbPromise = addDoc(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), docData);
-    const timeoutPromise = new Promise(resolve => setTimeout(resolve, 1500)); 
-
     try {
-      await Promise.race([dbPromise, timeoutPromise]);
-      setEnviando(false);
-      alert("REPORTE REGISTRADO.");
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), docData);
+      alert("¡GUARDADO CON ÉXITO!"); // Confirmación explícita
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
     } catch (e) {
       console.error(e);
-      alert("Error al guardar.");
-      setEnviando(false);
+      alert(`ERROR CRÍTICO AL GUARDAR: ${e.message}`); // Mostrar el error real
     }
+    setEnviando(false);
   };
 
   const listaEntidades = ASIGNACIONES[area][jefatura] || [];
   const completados = listaEntidades.filter(e => misReportes.some(r => r.entidad === e && r.tipo === tipo)).length;
-  const progreso = (completados / listaEntidades.length) * 100;
 
   return (
     <div className="space-y-4 max-w-md mx-auto">
       <div className="bg-white p-5 rounded-2xl shadow-lg border-t-4 border-blue-900">
-         {!estadoHorario.permitido && (
-            <div className="bg-amber-50 text-amber-800 p-3 rounded mb-4 text-xs flex items-center gap-2 border border-amber-200">
-               <AlertCircle size={16}/> <span><b>AVISO:</b> Fuera de horario ({estadoHorario.mensaje}).</span>
-            </div>
-         )}
-         
          <div className="space-y-3">
              <div className="flex gap-2">
                 <input className="w-1/3 p-2 border rounded text-xs font-bold uppercase" placeholder="Grado" value={grado} onChange={e=>setGrado(e.target.value)} />
@@ -388,7 +331,7 @@ function ReportForm({ user }) {
                 <select className="w-full p-2 bg-white border rounded text-xs" value={entidad} onChange={e=>setEntidad(e.target.value)}>
                    {listaEntidades.map(e => {
                       const listo = misReportes.some(r => r.entidad === e && r.tipo === tipo);
-                      return <option key={e} value={e}>{listo ? '✅' : '⬜'} {e} {listo ? '(LISTO)' : ''}</option>
+                      return <option key={e} value={e}>{listo ? '✅' : '⬜'} {e}</option>
                    })}
                 </select>
              </div>
@@ -411,7 +354,6 @@ function ReportForm({ user }) {
              </button>
          </div>
       </div>
-      {tipo !== 'extraordinario' && <div className="h-1 bg-slate-200 rounded overflow-hidden"><div className="h-full bg-green-500 transition-all" style={{width: `${progreso}%`}}></div></div>}
     </div>
   );
 }
@@ -423,7 +365,7 @@ function SupervisorDashboard({ user }) {
   const [modalFoto, setModalFoto] = useState(null);
 
   useEffect(() => {
-    // Consulta maestra: Trae todo y ordena por timestamp
+    // TRAER TODO SIN FILTROS DE SERVIDOR para evitar problemas de indices
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), orderBy('timestamp', 'desc'));
     const unsubscribe = onSnapshot(q, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
@@ -432,18 +374,14 @@ function SupervisorDashboard({ user }) {
     return () => unsubscribe();
   }, []);
 
-  // FILTRO SEGURO EN MEMORIA: Muestra TODOS los reportes de la historia si se selecciona la fecha correspondiente
-  // OJO: Si el usuario quiere ver TODO el historial, quitamos el filtro de fecha
+  // Filtro en memoria para visualización
   const reportesVisibles = reportes.filter(r => {
-     // Si la fecha coincide con la seleccionada
+     // SIEMPRE mostrar todo si la fecha coincide, o si es un día diferente y el usuario cambia la fecha en el input
      if (r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
      return true;
   });
 
-  // Agrupar visualmente por fechas si decidiéramos mostrar todo el historial, 
-  // pero por ahora mantenemos el filtro por día para que el Supervisor no se abrume.
-  
   const copiar = (texto) => {
     const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
     alert("Copiado.");
@@ -456,19 +394,12 @@ function SupervisorDashboard({ user }) {
         if(reportesArea.length === 0 && filtro !== 'todos') return;
         
         t += `*${areaName}*\n`;
-        if(reportesArea.length === 0) {
-            if (filtro === 'todos') t += "(Pendiente de reportes)\n";
-            else t += "Sin novedades.\n";
-        } else {
-           const conNovedad = reportesArea.filter(r => r.novedad?.toUpperCase() !== 'SIN NOVEDAD' && r.novedad !== 'S/N');
-           if (conNovedad.length === 0) t += "Sin novedad.\n";
-           else {
-               conNovedad.forEach(r => {
-                  const hora = obtenerHoraLegible(r.timestamp, r.horaReferencia);
-                  const resp = r.grado ? ` - Resp: ${r.grado} ${r.nombre.split(' ')[0]}` : '';
-                  t += `Con novedad (${hora}): ${r.novedad} (${r.entidad}${resp})\n`;
-               });
-           }
+        if(reportesArea.length === 0) t += "Sin novedades registradas.\n";
+        else {
+           reportesArea.forEach(r => {
+              if (r.novedad !== 'SIN NOVEDAD') t += `⚠ ${r.novedad} (${r.entidad})\n`;
+              else t += `✓ Sin novedad (${r.entidad})\n`;
+           });
         }
         t += "\n";
     });
@@ -476,21 +407,20 @@ function SupervisorDashboard({ user }) {
     copiar(t);
   };
 
-  const faltantes = Object.values(ASIGNACIONES).reduce((acc, curr) => acc + Object.values(curr).flat().length, 0) - reportesVisibles.length;
-
   return (
     <div className="space-y-4 animate-in fade-in">
       {modalFoto && <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={()=>setModalFoto(null)}><img src={modalFoto} className="max-w-full max-h-full rounded border-2 border-white"/><button className="absolute top-4 right-4 bg-white p-2 rounded-full"><X/></button></div>}
       
       <div className="bg-white p-4 rounded-xl shadow-md border-l-4 border-emerald-600">
-         <h2 className="font-bold text-lg text-slate-800">Panel de Control</h2>
+         <h2 className="font-bold text-lg text-slate-800">Historial Completo</h2>
+         <p className="text-[10px] text-slate-500 mb-2">Seleccione una fecha para ver reportes anteriores</p>
          <div className="flex flex-col gap-2 mt-2">
             <div className="flex gap-2 items-center">
                <span className="text-xs font-bold uppercase text-slate-500">Fecha:</span>
                <input type="date" className="p-2 border rounded text-xs flex-grow font-bold" value={fecha} onChange={e=>setFecha(e.target.value)}/>
             </div>
             <select className="p-2 border rounded text-xs uppercase font-bold" value={filtro} onChange={e=>setFiltro(e.target.value)}>
-               <option value="todos">VER TODOS LOS REPORTES DE LA FECHA</option>
+               <option value="todos">VER TODOS</option>
                <option value="apertura">SOLO APERTURA</option>
                <option value="cierre">SOLO CIERRE</option>
                <option value="extraordinario">SOLO NOVEDADES</option>
