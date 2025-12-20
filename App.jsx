@@ -85,10 +85,15 @@ const EXCEPCIONES_AREA = {
 const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE LA SOCIEDAD.";
 
 // --- Utilidades ---
-const obtenerFechaLocal = (dateObj = new Date()) => {
-  const year = dateObj.getFullYear();
-  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const day = String(dateObj.getDate()).padStart(2, '0');
+
+// GENERADOR DE FECHA ESTÁTICA (LA SOLUCIÓN A LA PERSISTENCIA)
+// Genera un string "YYYY-MM-DD" basado en la hora local del dispositivo.
+// Esto se guarda en la base de datos y se usa para filtrar.
+const obtenerFechaString = () => {
+  const ahora = new Date();
+  const year = ahora.getFullYear();
+  const month = String(ahora.getMonth() + 1).padStart(2, '0');
+  const day = String(ahora.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
 
@@ -136,15 +141,13 @@ const esHorarioPermitido = (tipo) => {
   return { permitido: true };
 };
 
-// --- Auditoría de Horario (Detector de "Picardía") ---
+// Auditoría de hora
 const verificarAuditoria = (reporte) => {
     if (!reporte.timestamp || !reporte.tipo) return null;
     const date = new Date(reporte.timestamp.seconds * 1000);
     const h = date.getHours();
     const m = date.getMinutes();
     const tiempoReal = h * 60 + m;
-
-    // Límites estrictos (Server Time)
     const LIMITE_APERTURA = 560; // 09:20
     const LIMITE_CIERRE = 980;   // 16:20
 
@@ -152,12 +155,12 @@ const verificarAuditoria = (reporte) => {
         return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
     }
     if (reporte.tipo === 'cierre' && tiempoReal > LIMITE_CIERRE) {
-         // Cierre es especial, si es muy tarde es extemporáneo
         return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
     }
     return null;
 };
 
+// Motor de imagen
 const procesarImagenSegura = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -376,13 +379,15 @@ function ReportForm({ user, setView }) {
 
   useEffect(() => {
     if (!user || !jefatura) return;
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), where('jefatura', '==', jefatura));
+    // CONSULTA BLINDADA: Filtra por la etiqueta de fecha "YYYY-MM-DD"
+    const fechaHoyString = obtenerFechaString();
+    const q = query(
+        collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), 
+        where('jefatura', '==', jefatura),
+        where('fecha_local', '==', fechaHoyString) // Filtro preciso
+    );
     const unsubscribe = onSnapshot(q, (snap) => {
-      const hoy = obtenerFechaLocal();
-      const docs = snap.docs.map(d => d.data()).filter(d => {
-        const fechaDoc = d.timestamp ? obtenerFechaLocal(new Date(d.timestamp.seconds * 1000)) : hoy; 
-        return fechaDoc === hoy;
-      });
+      const docs = snap.docs.map(d => d.data());
       setReportesHoyDetalle(docs);
     });
     return () => unsubscribe();
@@ -403,21 +408,34 @@ function ReportForm({ user, setView }) {
     if (!navigator.onLine) { alert("ERROR DE RED: Sin internet."); return; }
     if (!grado || !nombre || !foto) { alert("ATENCIÓN: Faltan datos."); return; }
     
-    // VERIFICACIÓN DE DUPLICADO
+    // VERIFICACIÓN DE DUPLICADO ROBUSTA
+    // Revisa si en la memoria local ya existe ese reporte
     const yaReportado = reportesHoyDetalle.some(r => r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
     if (yaReportado) {
-        alert(`YA REPORTADO: Esta entidad ya tiene su registro de ${tipo} de hoy.`);
+        alert(`YA REPORTADO: Ya existe un registro de ${tipo.toUpperCase()} para ${entidad} hoy.`);
         return;
+    }
+
+    if (!estadoHorario.enHorario) {
+      // Solo aviso visual, no bloquea
     }
 
     setEnviando(true);
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
     const horaRef = formatearHoraSimple(new Date()); 
+    const fechaLocalString = obtenerFechaString(); // "2024-05-21"
 
     const dbPromise = addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), {
         area: areaFinal, 
-        jefatura, entidad, tipo, novedad, foto, grado, nombre,
+        jefatura, 
+        entidad, 
+        tipo, 
+        novedad, 
+        foto, 
+        grado, 
+        nombre,
         horaReferencia: horaRef,
+        fecha_local: fechaLocalString, // CAMPO CLAVE PARA PERSISTENCIA
         timestamp: serverTimestamp(),
         userId: user.uid
     });
@@ -432,7 +450,9 @@ function ReportForm({ user, setView }) {
       if (tipo !== 'extraordinario') {
         const list = ASIGNACIONES[area][jefatura] || [];
         const pendientes = list.filter(e => e !== entidad && !reportesHoyDetalle.some(r => r.entidad === e && r.tipo === tipo));
-        if (pendientes.length > 0) setEntidad(pendientes[0]);
+        if (pendientes.length > 0) {
+            setEntidad(pendientes[0]);
+        }
       } else {
         setFoto(null);
       }
@@ -446,6 +466,7 @@ function ReportForm({ user, setView }) {
   const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
   const entidadesReportadasHoy = reportesHoyDetalle.filter(r => r.tipo === tipo).map(r => r.entidad);
   const progreso = entidadesJefatura.length > 0 ? (entidadesReportadasHoy.length / entidadesJefatura.length) * 100 : 0;
+  
   const isReportado = (ent) => reportesHoyDetalle.some(r => r.entidad === ent && r.tipo === tipo);
 
   return (
@@ -538,12 +559,12 @@ function ReportForm({ user, setView }) {
 
           <button 
             onClick={enviarParte} 
-            disabled={enviando || isReportado(entidad)} 
+            disabled={enviando || (isReportado(entidad) && tipo !== 'extraordinario')} 
             className={`w-full py-5 rounded-2xl font-black text-white shadow-2xl transition-all uppercase tracking-widest flex items-center justify-center gap-2 
-                ${enviando ? 'bg-slate-400 cursor-not-allowed opacity-50' : isReportado(entidad) ? 'bg-green-600 cursor-not-allowed' : !estadoHorario.enHorario ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-900 hover:bg-blue-800'} active:scale-95`}
+                ${enviando ? 'bg-slate-400 cursor-not-allowed opacity-50' : isReportado(entidad) && tipo !== 'extraordinario' ? 'bg-green-600 cursor-not-allowed' : !estadoHorario.enHorario ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-900 hover:bg-blue-800'} active:scale-95`}
           >
-            {enviando ? <RefreshCw className="animate-spin" /> : isReportado(entidad) ? <CheckCircle size={20} /> : !estadoHorario.enHorario ? <AlertTriangle size={20} /> : <Zap />}
-            {enviando ? 'ENVIANDO...' : isReportado(entidad) ? 'YA ENVIADO (LISTO)' : !estadoHorario.enHorario ? 'ENVIAR (FUERA DE HORARIO)' : 'ENVIAR PARTE OFICIAL'}
+            {enviando ? <RefreshCw className="animate-spin" /> : isReportado(entidad) && tipo !== 'extraordinario' ? <CheckCircle size={20} /> : !estadoHorario.enHorario ? <AlertTriangle size={20} /> : <Zap />}
+            {enviando ? 'ENVIANDO...' : isReportado(entidad) && tipo !== 'extraordinario' ? 'YA ENVIADO (LISTO)' : !estadoHorario.enHorario ? 'ENVIAR (FUERA DE HORARIO)' : 'ENVIAR PARTE OFICIAL'}
           </button>
         </div>
       </div>
@@ -568,7 +589,7 @@ function ReportForm({ user, setView }) {
 
 function SupervisorDashboard({ user }) {
   const [reportes, setReportes] = useState([]);
-  const [fecha, setFecha] = useState(obtenerFechaLocal());
+  const [fecha, setFecha] = useState(obtenerFechaString()); // INICIO CON FECHA STRING
   const [modalFoto, setModalFoto] = useState(null);
   const [filtroTipo, setFiltroTipo] = useState('todos');
   const [verTodosHistorial, setVerTodosHistorial] = useState(false); 
@@ -577,20 +598,14 @@ function SupervisorDashboard({ user }) {
     if (!user) return;
     const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3');
     
-    const unsubscribe = onSnapshot(colRef, (snap) => {
-      const docs = snap.docs
-        .map(d => ({id: d.id, ...d.data()}))
-        .filter(d => {
-          if (verTodosHistorial) return true; 
-          const fechaTimestamp = d.timestamp ? new Date(d.timestamp.seconds * 1000) : new Date();
-          const fechaLocalDoc = obtenerFechaLocal(fechaTimestamp);
-          return fechaLocalDoc === fecha; 
-        })
-        .sort((a, b) => {
-          const tA = a.timestamp?.seconds || Number.MAX_SAFE_INTEGER;
-          const tB = b.timestamp?.seconds || Number.MAX_SAFE_INTEGER;
-          return tB - tA;
-        });
+    // Consulta optimizada usando el campo string 'fecha_local'
+    let q = query(colRef, orderBy('timestamp', 'desc'));
+    if (!verTodosHistorial) {
+        q = query(colRef, where('fecha_local', '==', fecha), orderBy('timestamp', 'desc'));
+    }
+
+    const unsubscribe = onSnapshot(q, (snap) => {
+      const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
       setReportes(docs);
     });
     return () => unsubscribe();
@@ -622,12 +637,16 @@ function SupervisorDashboard({ user }) {
 
     let texto = `*${titulo} - ${fecha}*\n\n`;
     
+    // Obtener los reportes filtrados
     const reportesDelDia = reportes.filter(r => r.tipo === (filtroTipo === 'todos' ? r.tipo : filtroTipo));
 
+    // Iterar por TODAS las asignaciones esperadas (Base Teórica)
     [AREAS.FINANCIERA, AREAS.VIP, AREAS.INSTALACIONES, AREAS.ETV].forEach(areaName => {
+      // Filtrar Jefaturas de esta Área
       const jefaturasDelArea = Object.entries(ASIGNACIONES[areaName] || {});
       
       if (filtroTipo === 'extraordinario') {
+         // Para extraordinarios solo mostramos lo que hubo
          const reportsInArea = reportesDelDia.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === areaName);
          if (reportsInArea.length > 0) {
             texto += `*${areaName}.*\n`;
