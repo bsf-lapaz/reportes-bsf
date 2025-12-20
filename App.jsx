@@ -2,12 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { 
-  getFirestore, collection, addDoc, onSnapshot, serverTimestamp 
+  getFirestore, collection, addDoc, query, orderBy, 
+  onSnapshot, serverTimestamp 
 } from 'firebase/firestore';
 import { 
   Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
   UserCheck, ClipboardList, AlertTriangle, Camera, 
-  Image as ImageIcon, X, RefreshCw, Zap, User, Database, Lock, Wifi, WifiOff 
+  Image as ImageIcon, X, RefreshCw, Zap, User, Database, Lock, Wifi, WifiOff, Share2, AlertCircle, CheckSquare 
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -26,11 +27,10 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = 'bsf-la-paz-v1';
 
-// RUTA NUEVA Y LIMPIA
+// RUTA ÚNICA Y CENTRALIZADA
 const COLLECTION_NAME = 'reportes_final_v5'; 
-// La ruta completa DEBE respetar la estructura de reglas de seguridad si existen, 
-// pero usaremos una colección raíz simple para máxima compatibilidad en modo prueba.
-// Si las reglas exigen la ruta artifacts, la usamos:
+// En producción, usamos la ruta artifacts para cumplir reglas. 
+// En modo prueba local, a veces es mejor usar la raíz, pero mantendremos la estructura sólida.
 const USE_ARTIFACTS_PATH = true; 
 
 // --- Constantes ---
@@ -101,6 +101,50 @@ const formatearHoraSimple = (fecha) => {
   return fecha.getHours().toString().padStart(2, '0') + ':' + fecha.getMinutes().toString().padStart(2, '0');
 };
 
+const obtenerHoraLegible = (timestamp, horaReferencia) => {
+  // Prioridad a la hora guardada manualmente para consistencia visual
+  if (horaReferencia && horaReferencia.includes(':')) return horaReferencia;
+  if (timestamp) {
+    return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
+      hour: '2-digit', minute: '2-digit', hour12: false
+    });
+  }
+  return "...";
+};
+
+const esHorarioPermitido = (tipo) => {
+  if (tipo === 'extraordinario') return { permitido: true };
+  const ahora = new Date();
+  const tiempoActual = ahora.getHours() * 60 + ahora.getMinutes(); 
+  if (tipo === 'apertura') {
+    if (tiempoActual >= 540 && tiempoActual <= 560) return { permitido: true };
+    return { permitido: false, mensaje: "Horario Apertura (09:00 - 09:20)" };
+  }
+  if (tipo === 'cierre') {
+    if (tiempoActual >= 960 && tiempoActual <= 980) return { permitido: true };
+    return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
+  }
+  return { permitido: true };
+};
+
+const verificarAuditoria = (reporte) => {
+    if (!reporte.timestamp || !reporte.tipo) return null;
+    const date = new Date(reporte.timestamp.seconds * 1000);
+    const h = date.getHours();
+    const m = date.getMinutes();
+    const tiempoReal = h * 60 + m;
+    const LIMITE_APERTURA = 560; // 09:20
+    const LIMITE_CIERRE = 980;   // 16:20
+
+    if (reporte.tipo === 'apertura' && tiempoReal > LIMITE_APERTURA) {
+        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
+    }
+    if (reporte.tipo === 'cierre' && tiempoReal > LIMITE_CIERRE) {
+        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
+    }
+    return null;
+};
+
 const procesarImagenSegura = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -131,7 +175,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('login'); 
   const [loading, setLoading] = useState(true);
-  const [dbStatus, setDbStatus] = useState('Desconectado');
+  const [dbStatus, setDbStatus] = useState('Conectando...');
   const [reportesGlobales, setReportesGlobales] = useState([]);
 
   useEffect(() => {
@@ -140,6 +184,7 @@ export default function App() {
         await signInAnonymously(auth);
       } catch (error) { 
         console.error("Auth:", error); 
+        setDbStatus('Error de Autenticación');
         setLoading(false);
       }
     };
@@ -147,25 +192,25 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
       setLoading(false); 
+      if(u) setDbStatus('Conectado');
     });
     return () => unsubscribe();
   }, []);
 
-  // LISTENER GLOBAL DE DATOS (El corazón de la persistencia)
+  // LISTENER GLOBAL DE DATOS
   useEffect(() => {
-    // Usamos la ruta larga si es necesario por las reglas de seguridad
     const ref = USE_ARTIFACTS_PATH 
         ? collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME)
         : collection(db, COLLECTION_NAME);
 
-    // SIN ORDERBY, SIN WHERE -> Trae todo para evitar errores de índice
+    // Listener sin filtros para evitar errores de índice
     const unsubscribe = onSnapshot(ref, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
       setReportesGlobales(docs);
-      setDbStatus(`Conectado. ${docs.length} registros cargados.`);
+      setDbStatus(`Sincronizado: ${docs.length} reportes.`);
     }, (error) => {
       console.error("DB Error:", error);
-      setDbStatus(`Error de conexión: ${error.message}`);
+      setDbStatus(`Error DB: ${error.message}`);
     });
     return () => unsubscribe();
   }, []);
@@ -207,6 +252,7 @@ function LoginScreen({ setView }) {
         <Shield size={60} className="text-blue-900 mx-auto mb-4" />
         <h2 className="text-2xl font-black text-slate-900 uppercase">Bienvenido</h2>
         <div className="h-1 w-20 bg-yellow-500 mx-auto my-2"></div>
+        <p className="text-sm text-slate-500 mb-6">Seleccione su perfil para ingresar</p>
         
         <div className="space-y-4">
           <button onClick={() => setView('form')} className="w-full p-4 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-xl flex items-center gap-4 transition-all group border border-blue-100">
@@ -229,17 +275,24 @@ function ReportForm({ user, reportesGlobales }) {
   const [entidad, setEntidad] = useState('');
   const [tipo, setTipo] = useState('apertura');
   const [novedad, setNovedad] = useState('SIN NOVEDAD');
+  
   const [grado, setGrado] = useState(localStorage.getItem('bsf_grado') || '');
   const [nombre, setNombre] = useState(localStorage.getItem('bsf_nombre') || '');
   const [foto, setFoto] = useState(null); 
   const [enviando, setEnviando] = useState(false);
   const [horaActual, setHoraActual] = useState(new Date());
+  const [estadoHorario, setEstadoHorario] = useState({ permitido: true });
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    const t = setInterval(() => setHoraActual(new Date()), 1000);
+    const t = setInterval(() => { 
+        const now = new Date();
+        setHoraActual(now);
+        setEstadoHorario(esHorarioPermitido(tipo));
+    }, 1000);
+    setEstadoHorario(esHorarioPermitido(tipo));
     return () => clearInterval(t);
-  }, []);
+  }, [tipo]);
 
   useEffect(() => {
     localStorage.setItem('bsf_grado', grado);
@@ -255,11 +308,12 @@ function ReportForm({ user, reportesGlobales }) {
     else setTipo('extraordinario');
   }, [area]);
 
+  // Selección automática y filtrado de reportes de HOY en memoria
   useEffect(() => {
     const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
-    // Filtrar los reportes de HOY para esta jefatura
-    const hoy = obtenerFechaString();
-    const misReportesHoy = reportesGlobales.filter(r => r.fecha_string === hoy && r.jefatura === jefatura);
+    const hoyString = obtenerFechaString();
+    // Filtramos de los globales los que son de hoy y de esta jefatura
+    const misReportesHoy = reportesGlobales.filter(r => r.fecha_string === hoyString && r.jefatura === jefatura);
 
     if (entidadesJefatura.length > 0) {
        let primeraPendiente = entidadesJefatura[0];
@@ -269,7 +323,7 @@ function ReportForm({ user, reportesGlobales }) {
        }
        setEntidad(primeraPendiente);
     }
-  }, [jefatura, area, tipo, reportesGlobales]); // Dependencia clave: reportesGlobales se actualiza solo
+  }, [jefatura, area, tipo, reportesGlobales]);
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
@@ -323,6 +377,12 @@ function ReportForm({ user, reportesGlobales }) {
   return (
     <div className="space-y-4 max-w-md mx-auto">
       <div className="bg-white p-5 rounded-2xl shadow-lg border-t-4 border-blue-900">
+         {!estadoHorario.permitido && (
+            <div className="bg-amber-50 text-amber-800 p-3 rounded mb-4 text-xs flex items-center gap-2 border border-amber-200">
+               <AlertCircle size={16}/> <span><b>AVISO:</b> Fuera de horario ({estadoHorario.mensaje}).</span>
+            </div>
+         )}
+         
          <div className="space-y-3">
              <div className="flex gap-2">
                 <input className="w-1/3 p-2 border rounded text-xs font-bold uppercase" placeholder="Grado" value={grado} onChange={e=>setGrado(e.target.value)} />
@@ -375,14 +435,15 @@ function ReportForm({ user, reportesGlobales }) {
   );
 }
 
-function SupervisorDashboard({ reportesGlobales }) {
+function SupervisorDashboard({ user, reportesGlobales }) {
   const [fecha, setFecha] = useState(obtenerFechaString());
   const [filtro, setFiltro] = useState('todos');
   const [verTodoHistorial, setVerTodoHistorial] = useState(false);
   const [modalFoto, setModalFoto] = useState(null);
 
-  // Filtro en memoria
-  const reportesVisibles = reportesGlobales.filter(r => {
+  // Filtros seguros (evitando crashes por datos undefined)
+  const reportesVisibles = (reportesGlobales || []).filter(r => {
+     if (!r) return false;
      if (!verTodoHistorial && r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
      return true;
@@ -400,8 +461,10 @@ function SupervisorDashboard({ reportesGlobales }) {
         if(reportesArea.length === 0 && filtro !== 'todos') return;
         
         t += `*${areaName}*\n`;
-        if(reportesArea.length === 0) t += "Sin novedades registradas.\n";
-        else {
+        if(reportesArea.length === 0) {
+           if(filtro === 'todos') t += "(Pendiente)\n";
+           else t += "Sin novedades.\n";
+        } else {
            const conNovedad = reportesArea.filter(r => r.novedad?.toUpperCase() !== 'SIN NOVEDAD' && r.novedad !== 'S/N');
            if (conNovedad.length === 0) t += "Sin novedad.\n";
            else {
@@ -429,9 +492,10 @@ function SupervisorDashboard({ reportesGlobales }) {
       <div className="bg-white p-4 rounded-xl shadow-md border-l-4 border-emerald-600">
          <h2 className="font-bold text-lg text-slate-800">Panel de Control</h2>
          <div className="flex flex-col gap-2 mt-2">
-            <div className="flex gap-2">
-               <button onClick={()=>setVerTodoHistorial(!verTodoHistorial)} className={`p-2 border rounded ${verTodoHistorial ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}><Database size={16}/></button>
+            <div className="flex gap-2 items-center">
+               <button onClick={()=>setVerTodoHistorial(!verTodoHistorial)} className={`p-2 border rounded ${verTodoHistorial ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`} title="Ver Historial Completo"><Database size={16}/></button>
                <input type="date" className="p-2 border rounded text-xs flex-grow font-bold" value={fecha} onChange={e=>setFecha(e.target.value)} disabled={verTodoHistorial}/>
+               <button onClick={()=>window.location.reload()} className="p-2 border rounded bg-slate-100" title="Recargar"><RefreshCw size={16}/></button>
             </div>
             <select className="p-2 border rounded text-xs uppercase font-bold" value={filtro} onChange={e=>setFiltro(e.target.value)}>
                <option value="todos">VER TODOS</option>
@@ -460,7 +524,10 @@ function SupervisorDashboard({ reportesGlobales }) {
                <div className="flex-grow min-w-0">
                   <div className="flex justify-between">
                      <span className={`text-[9px] font-bold px-2 rounded ${r.tipo==='apertura'?'bg-blue-100 text-blue-800':r.tipo==='cierre'?'bg-slate-100':'bg-red-100 text-red-800'}`}>{r.tipo.toUpperCase()}</span>
-                     <span className="text-[10px] font-mono text-slate-400">{r.horaReferencia}</span>
+                     <span className="text-[10px] font-mono text-slate-400">
+                        {r.horaReferencia}
+                        {verificarAuditoria(r) && <span className="ml-1 text-red-600 font-bold" title={`Real: ${verificarAuditoria(r).horaReal}`}>⚠</span>}
+                     </span>
                   </div>
                   <h4 className="font-bold text-xs truncate mt-1">{r.entidad}</h4>
                   <p className="text-[9px] italic text-slate-500">{r.grado} {r.nombre}</p>
