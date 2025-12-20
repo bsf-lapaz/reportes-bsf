@@ -8,7 +8,8 @@ import {
 import { 
   Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
   UserCheck, ClipboardList, AlertTriangle, Camera, 
-  Image as ImageIcon, X, RefreshCw, Zap, User, Share2, WifiOff, AlertCircle, CheckSquare, XCircle 
+  Image as ImageIcon, X, RefreshCw, Zap, User, Filter, Share2, 
+  CheckSquare, AlertCircle, WifiOff, Calendar, Database 
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE (TUS DATOS REALES) ---
@@ -22,7 +23,6 @@ const firebaseConfig = {
   measurementId: "G-0GKMSNMB4Q"
 };
 
-// Inicialización
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -106,29 +106,33 @@ const obtenerHoraLegible = (timestamp, horaReferencia) => {
   return "...";
 };
 
-const obtenerFechaHoy = () => new Date().toISOString().split('T')[0];
+const obtenerFechaLocal = (dateObj = new Date()) => {
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 const formatearHoraSimple = (fecha) => {
   return fecha.getHours().toString().padStart(2, '0') + ':' + fecha.getMinutes().toString().padStart(2, '0');
 };
 
-const verificarHorario = (tipo) => {
-  if (tipo === 'extraordinario') return { enHorario: true };
+const esHorarioPermitido = (tipo) => {
+  if (tipo === 'extraordinario') return { permitido: true };
   const ahora = new Date();
   const tiempoActual = ahora.getHours() * 60 + ahora.getMinutes(); 
 
   if (tipo === 'apertura') {
-    if (tiempoActual >= 540 && tiempoActual <= 560) return { enHorario: true };
-    return { enHorario: false, mensaje: "Fuera de horario (09:00 - 09:20)" };
+    if (tiempoActual >= 540 && tiempoActual <= 560) return { permitido: true };
+    return { permitido: false, mensaje: "Horario Apertura (09:00 - 09:20)" };
   }
   if (tipo === 'cierre') {
-    if (tiempoActual >= 960 && tiempoActual <= 980) return { enHorario: true };
-    return { enHorario: false, mensaje: "Fuera de horario (16:00 - 16:20)" };
+    if (tiempoActual >= 960 && tiempoActual <= 980) return { permitido: true };
+    return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
   }
-  return { enHorario: true };
+  return { permitido: true };
 };
 
-// --- MOTOR DE IMAGEN ---
 const procesarImagenSegura = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -303,16 +307,17 @@ function ReportForm({ user, setView }) {
   const [reportesHoyDetalle, setReportesHoyDetalle] = useState([]);
   const [horaActual, setHoraActual] = useState(new Date());
   
-  const [estadoHorario, setEstadoHorario] = useState({ enHorario: true });
+  const [estadoHorario, setEstadoHorario] = useState({ permitido: true });
   const fileInputRef = useRef(null);
 
+  // Reloj y Validación en Tiempo Real
   useEffect(() => {
     const timer = setInterval(() => {
         const now = new Date();
         setHoraActual(now);
-        setEstadoHorario(verificarHorario(tipo));
+        setEstadoHorario(esHorarioPermitido(tipo));
     }, 1000);
-    setEstadoHorario(verificarHorario(tipo)); 
+    setEstadoHorario(esHorarioPermitido(tipo)); 
     return () => clearInterval(timer);
   }, [tipo]);
 
@@ -349,9 +354,9 @@ function ReportForm({ user, setView }) {
     if (!user || !jefatura) return;
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), where('jefatura', '==', jefatura));
     const unsubscribe = onSnapshot(q, (snap) => {
-      const hoy = obtenerFechaHoy();
+      const hoy = obtenerFechaLocal();
       const docs = snap.docs.map(d => d.data()).filter(d => {
-        const fechaDoc = d.timestamp ? new Date(d.timestamp.seconds * 1000).toISOString().split('T')[0] : hoy; 
+        const fechaDoc = d.timestamp ? obtenerFechaLocal(new Date(d.timestamp.seconds * 1000)) : hoy; 
         return fechaDoc === hoy;
       });
       setReportesHoyDetalle(docs);
@@ -385,7 +390,8 @@ function ReportForm({ user, setView }) {
       return;
     }
     
-    // NO BLOQUEA POR HORARIO, SOLO AVISA VISUALMENTE
+    // Si no está permitido, solo mostramos el aviso visual, pero NO bloqueamos.
+    // El bloqueo anterior fue removido según tu última instrucción.
 
     setEnviando(true);
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
@@ -444,7 +450,7 @@ function ReportForm({ user, setView }) {
           <FileText className="text-blue-900" /> FORMULARIO DE PARTE
         </h3>
 
-        {!estadoHorario.enHorario && (
+        {!estadoHorario.permitido && (
             <div className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-4 rounded-lg flex items-start gap-3">
                 <AlertCircle className="text-amber-600 flex-shrink-0" size={24} />
                 <div>
@@ -531,10 +537,10 @@ function ReportForm({ user, setView }) {
             onClick={enviarParte} 
             disabled={enviando || isReportado(entidad)} 
             className={`w-full py-5 rounded-2xl font-black text-white shadow-2xl transition-all uppercase tracking-widest flex items-center justify-center gap-2 
-                ${enviando ? 'bg-slate-400 cursor-not-allowed opacity-50' : isReportado(entidad) ? 'bg-green-600 cursor-not-allowed' : !estadoHorario.enHorario ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-900 hover:bg-blue-800'} active:scale-95`}
+                ${enviando ? 'bg-slate-400 cursor-not-allowed opacity-50' : isReportado(entidad) ? 'bg-green-600 cursor-not-allowed' : !estadoHorario.permitido ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-900 hover:bg-blue-800'} active:scale-95`}
           >
-            {enviando ? <RefreshCw className="animate-spin" /> : isReportado(entidad) ? <CheckCircle size={20} /> : !estadoHorario.enHorario ? <AlertTriangle size={20} /> : <Zap />}
-            {enviando ? 'ENVIANDO...' : isReportado(entidad) ? 'YA ENVIADO (LISTO)' : !estadoHorario.enHorario ? 'ENVIAR (FUERA DE HORARIO)' : 'ENVIAR PARTE OFICIAL'}
+            {enviando ? <RefreshCw className="animate-spin" /> : isReportado(entidad) ? <CheckCircle size={20} /> : !estadoHorario.permitido ? <AlertTriangle size={20} /> : <Zap />}
+            {enviando ? 'ENVIANDO...' : isReportado(entidad) ? 'YA ENVIADO (LISTO)' : !estadoHorario.permitido ? 'ENVIAR (FUERA DE HORARIO)' : 'ENVIAR PARTE OFICIAL'}
           </button>
         </div>
       </div>
@@ -559,9 +565,10 @@ function ReportForm({ user, setView }) {
 
 function SupervisorDashboard({ user }) {
   const [reportes, setReportes] = useState([]);
-  const [fecha, setFecha] = useState(obtenerFechaHoy());
+  const [fecha, setFecha] = useState(obtenerFechaLocal());
   const [modalFoto, setModalFoto] = useState(null);
   const [filtroTipo, setFiltroTipo] = useState('todos');
+  const [verTodosHistorial, setVerTodosHistorial] = useState(false); 
 
   useEffect(() => {
     if (!user) return;
@@ -571,8 +578,10 @@ function SupervisorDashboard({ user }) {
       const docs = snap.docs
         .map(d => ({id: d.id, ...d.data()}))
         .filter(d => {
-          const fechaDoc = d.timestamp ? new Date(d.timestamp.seconds * 1000).toISOString().split('T')[0] : obtenerFechaHoy();
-          return fechaDoc === fecha;
+          if (verTodosHistorial) return true; 
+          const fechaTimestamp = d.timestamp ? new Date(d.timestamp.seconds * 1000) : new Date();
+          const fechaLocalDoc = obtenerFechaLocal(fechaTimestamp);
+          return fechaLocalDoc === fecha;
         })
         .sort((a, b) => {
           const tA = a.timestamp?.seconds || Number.MAX_SAFE_INTEGER;
@@ -582,7 +591,7 @@ function SupervisorDashboard({ user }) {
       setReportes(docs);
     });
     return () => unsubscribe();
-  }, [user, fecha]);
+  }, [user, fecha, verTodosHistorial]);
 
   const reportesFiltrados = reportes.filter(r => filtroTipo === 'todos' ? true : r.tipo === filtroTipo);
 
@@ -610,20 +619,12 @@ function SupervisorDashboard({ user }) {
 
     let texto = `*${titulo} - ${fecha}*\n\n`;
     
-    const grupos = { [AREAS.FINANCIERA]: [], [AREAS.VIP]: [], [AREAS.INSTALACIONES]: [], [AREAS.ETV]: [] };
-    
-    // Obtener los reportes filtrados
     const reportesDelDia = reportes.filter(r => r.tipo === (filtroTipo === 'todos' ? r.tipo : filtroTipo));
 
-    // Iterar por TODAS las asignaciones esperadas (Base Teórica)
     [AREAS.FINANCIERA, AREAS.VIP, AREAS.INSTALACIONES, AREAS.ETV].forEach(areaName => {
-      // Filtrar Jefaturas de esta Área
       const jefaturasDelArea = Object.entries(ASIGNACIONES[areaName] || {});
       
-      // Si el filtro no es TODOS y no hay reportes, ¿mostramos el área? 
-      // El usuario quiere ver faltantes, así que SI mostramos si es Apertura/Cierre.
       if (filtroTipo === 'extraordinario') {
-         // Para extraordinarios solo mostramos lo que hubo
          const reportsInArea = reportesDelDia.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === areaName);
          if (reportsInArea.length > 0) {
             texto += `*${areaName}.*\n`;
@@ -637,16 +638,16 @@ function SupervisorDashboard({ user }) {
          return;
       }
 
-      // Para Apertura/Cierre/Todos: Listamos TODAS las entidades
       texto += `*${areaName}.*\n`;
       let areaTieneContenido = false;
       let novedadesDelArea = [];
 
-      // Recolectar datos
       jefaturasDelArea.forEach(([nombreJefatura, listaEntidades]) => {
           listaEntidades.forEach(entidad => {
               if (EXCEPCIONES_AREA[entidad] && EXCEPCIONES_AREA[entidad] !== areaName) return;
+              
               const reporte = reportesDelDia.find(r => r.entidad === entidad);
+              
               if (reporte) {
                   areaTieneContenido = true;
                   const esSinNovedad = !reporte.novedad || reporte.novedad.toUpperCase().includes("SIN NOVEDAD") || reporte.novedad.toUpperCase() === "S/N";
@@ -655,11 +656,14 @@ function SupervisorDashboard({ user }) {
                       const resp = reporte.grado ? ` - Resp: ${reporte.grado} ${reporte.nombre.split(' ')[0]}` : '';
                       novedadesDelArea.push(`Con novedad (${hora}): ${reporte.novedad} (${entidad}${resp}).`);
                   }
+              } else {
+                  if (filtroTipo !== 'todos') { 
+                      texto += `(FALTA REPORTE): ${entidad}\n`;
+                  }
               }
           });
       });
       
-      // Manejar excepciones inversas (entidades reasignadas a esta área)
       Object.entries(EXCEPCIONES_AREA).forEach(([entidad, areaDestino]) => {
           if (areaDestino === areaName) {
               const reporte = reportesDelDia.find(r => r.entidad === entidad);
@@ -670,30 +674,21 @@ function SupervisorDashboard({ user }) {
                       const hora = obtenerHoraLegible(reporte.timestamp, reporte.horaReferencia);
                       novedadesDelArea.push(`Con novedad (${hora}): ${reporte.novedad} (${entidad}).`);
                   }
+              } else if (filtroTipo !== 'todos') {
+                  texto += `(FALTA REPORTE): ${entidad}\n`;
               }
           }
       });
 
-      // LÓGICA DE RESUMEN INTELIGENTE
       if (areaTieneContenido) {
           if (novedadesDelArea.length === 0) {
-              // Si hay contenido pero 0 novedades = Todo Sin Novedad
               texto += `Sin novedad.\n`;
           } else {
-              // Si hay novedades, las listamos una por una
               novedadesDelArea.forEach(n => texto += `${n}\n`);
           }
       } else {
-          // Si no hay ningún reporte en toda el área (pero estamos en horario de reporte)
-          if (filtroTipo !== 'todos') { 
-               // Aquí podríamos listar las que faltan, o dejarlo en blanco si se prefiere ver en el panel.
-               // Según instrucción: "si esta sin novedad tooodos... unicamente debe decir sin novedad".
-               // Asumiremos que si no hay nada, está pendiente, no "sin novedad".
-               texto += `(Pendiente de reportes)\n`;
-          } else {
-               // En vista "Todos", si no hay nada, puede ser que no sea hora
-               texto += `Sin novedades registradas.\n`;
-          }
+          if (filtroTipo !== 'todos') texto += `(Pendiente de reportes)\n`;
+          else texto += `Sin novedades registradas.\n`;
       }
 
       texto += `\n`;
@@ -704,8 +699,6 @@ function SupervisorDashboard({ user }) {
   };
 
   const totalEntidadesEsperadas = Object.values(ASIGNACIONES).reduce((acc, curr) => acc + Object.values(curr).flat().length, 0);
-  
-  // Cálculo preciso de faltantes basado solo en las jefaturas oficiales (20 oficiales)
   const jefaturasTotales = new Set(Object.values(ASIGNACIONES).flatMap(area => Object.keys(area)));
   const jefaturasReportadas = new Set(reportesFiltrados.map(r => r.jefatura));
   const oficialesFaltantes = [...jefaturasTotales].filter(j => !jefaturasReportadas.has(j));
@@ -724,8 +717,15 @@ function SupervisorDashboard({ user }) {
       <div className="bg-white p-6 rounded-2xl shadow-xl border-l-8 border-emerald-700 flex flex-col sm:flex-row justify-between items-center gap-4">
         <div><h2 className="text-2xl font-black text-slate-800 uppercase tracking-tighter">Central de Novedades</h2><p className="text-slate-400 text-xs font-bold">Resumen Diario de Seguridad</p></div>
         <div className="flex flex-col gap-2 items-end w-full sm:w-auto">
-          <div className="flex gap-2 w-full">
-            <input type="date" value={fecha} onChange={e => setFecha(e.target.value)} className="p-2 border rounded-xl font-bold bg-slate-50 text-xs w-full" />
+          <div className="flex gap-2 w-full items-center">
+            <button 
+                onClick={() => setVerTodosHistorial(!verTodosHistorial)} 
+                className={`p-2 rounded-xl border font-bold text-xs ${verTodosHistorial ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-500'}`}
+                title="Ver historial completo sin filtro de fecha"
+            >
+                <Database size={16} />
+            </button>
+            <input type="date" value={fecha} onChange={e => setFecha(e.target.value)} disabled={verTodosHistorial} className="p-2 border rounded-xl font-bold bg-slate-50 text-xs w-full disabled:opacity-50" />
             <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} className="p-2 border rounded-xl font-bold bg-slate-50 text-xs uppercase w-full">
               <option value="todos">Todos</option>
               <option value="apertura">Apertura</option>
@@ -739,7 +739,6 @@ function SupervisorDashboard({ user }) {
         </div>
       </div>
 
-      {/* PANEL DE CONTROL DE ASISTENCIA (JEFATURAS) */}
       {(filtroTipo === 'apertura' || filtroTipo === 'cierre') && (
         <div className={`p-4 rounded-xl shadow-md border-l-4 flex flex-col gap-2 ${oficialesFaltantes.length > 0 ? 'bg-red-50 border-red-500 text-red-800' : 'bg-green-50 border-green-500 text-green-800'}`}>
             <div className="flex justify-between items-center">
