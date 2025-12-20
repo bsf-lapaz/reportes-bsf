@@ -85,11 +85,22 @@ const EXCEPCIONES_AREA = {
 const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE LA SOCIEDAD.";
 
 // --- Utilidades ---
-const formatearFecha = (timestamp) => {
-  if (!timestamp) return "...";
-  return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
-    hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit'
-  });
+// Obtiene la fecha local del dispositivo en formato YYYY-MM-DD (Evita errores UTC)
+const obtenerFechaLocal = (dateObj = new Date()) => {
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const formatearFechaHora = (timestamp, horaReferencia) => {
+  if (timestamp) {
+    return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
+      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
+    });
+  }
+  if (horaReferencia) return `(Pend) ${horaReferencia}`;
+  return "...";
 };
 
 const obtenerHoraLegible = (timestamp, horaReferencia) => {
@@ -104,13 +115,6 @@ const obtenerHoraLegible = (timestamp, horaReferencia) => {
     return partes.length > 1 ? partes[1] : horaReferencia;
   }
   return "...";
-};
-
-const obtenerFechaLocal = (dateObj = new Date()) => {
-  const year = dateObj.getFullYear();
-  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const day = String(dateObj.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
 };
 
 const formatearHoraSimple = (fecha) => {
@@ -307,10 +311,9 @@ function ReportForm({ user, setView }) {
   const [reportesHoyDetalle, setReportesHoyDetalle] = useState([]);
   const [horaActual, setHoraActual] = useState(new Date());
   
-  const [estadoHorario, setEstadoHorario] = useState({ permitido: true });
+  const [estadoHorario, setEstadoHorario] = useState({ enHorario: true });
   const fileInputRef = useRef(null);
 
-  // Reloj y Validación en Tiempo Real
   useEffect(() => {
     const timer = setInterval(() => {
         const now = new Date();
@@ -354,6 +357,7 @@ function ReportForm({ user, setView }) {
     if (!user || !jefatura) return;
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), where('jefatura', '==', jefatura));
     const unsubscribe = onSnapshot(q, (snap) => {
+      // Usar fecha LOCAL para el filtro del checklist del oficial
       const hoy = obtenerFechaLocal();
       const docs = snap.docs.map(d => d.data()).filter(d => {
         const fechaDoc = d.timestamp ? obtenerFechaLocal(new Date(d.timestamp.seconds * 1000)) : hoy; 
@@ -375,37 +379,17 @@ function ReportForm({ user, setView }) {
   };
 
   const enviarParte = async () => {
-    if (!user) {
-      alert("Error: Usuario no autenticado. Intente reconectar.");
-      return;
-    }
+    if (!user) { alert("Error: Usuario no autenticado."); return; }
+    if (!navigator.onLine) { alert("ERROR DE RED: Sin internet."); return; }
+    if (!grado || !nombre || !foto) { alert("ATENCIÓN: Faltan datos."); return; }
     
-    if (!navigator.onLine) {
-      alert("ERROR DE RED: No tiene conexión a internet. Verifique sus datos móviles.");
-      return;
-    }
-
-    if (!grado || !nombre || !foto) {
-      alert("ATENCIÓN: Debe llenar su Grado, Nombre y tomar la FOTO obligatoria.");
-      return;
-    }
-    
-    // Si no está permitido, solo mostramos el aviso visual, pero NO bloqueamos.
-    // El bloqueo anterior fue removido según tu última instrucción.
-
     setEnviando(true);
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
     const horaRef = formatearHoraSimple(new Date()); 
 
     const dbPromise = addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), {
         area: areaFinal, 
-        jefatura, 
-        entidad, 
-        tipo, 
-        novedad, 
-        foto, 
-        grado, 
-        nombre,
+        jefatura, entidad, tipo, novedad, foto, grado, nombre,
         horaReferencia: horaRef,
         timestamp: serverTimestamp(),
         userId: user.uid
@@ -415,32 +399,26 @@ function ReportForm({ user, setView }) {
 
     try {
       await Promise.race([dbPromise, timeoutPromise]);
-      
       setEnviando(false);
       alert("REPORTE REGISTRADO CORRECTAMENTE.");
       setNovedad('SIN NOVEDAD');
-      
       if (tipo !== 'extraordinario') {
         const list = ASIGNACIONES[area][jefatura] || [];
         const pendientes = list.filter(e => e !== entidad && !reportesHoyDetalle.some(r => r.entidad === e && r.tipo === tipo));
-        if (pendientes.length > 0) {
-            setEntidad(pendientes[0]);
-        }
+        if (pendientes.length > 0) setEntidad(pendientes[0]);
       } else {
         setFoto(null);
       }
-
     } catch (e) {
       console.error(e);
       setEnviando(false);
-      alert("Error técnico al intentar guardar. Verifique su conexión.");
+      alert("Error técnico al intentar guardar.");
     }
   };
 
   const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
   const entidadesReportadasHoy = reportesHoyDetalle.filter(r => r.tipo === tipo).map(r => r.entidad);
   const progreso = entidadesJefatura.length > 0 ? (entidadesReportadasHoy.length / entidadesJefatura.length) * 100 : 0;
-  
   const isReportado = (ent) => reportesHoyDetalle.some(r => r.entidad === ent && r.tipo === tipo);
 
   return (
@@ -450,13 +428,12 @@ function ReportForm({ user, setView }) {
           <FileText className="text-blue-900" /> FORMULARIO DE PARTE
         </h3>
 
-        {!estadoHorario.permitido && (
+        {!estadoHorario.enHorario && (
             <div className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-4 rounded-lg flex items-start gap-3">
                 <AlertCircle className="text-amber-600 flex-shrink-0" size={24} />
                 <div>
                     <h4 className="text-amber-800 font-bold uppercase text-xs">Aviso: Fuera de Horario</h4>
                     <p className="text-amber-700 text-xs mt-1">{estadoHorario.mensaje}</p>
-                    <p className="text-amber-800 font-bold text-[10px]">Puede enviar el reporte, pero quedará registrado como extemporáneo.</p>
                 </div>
             </div>
         )}
@@ -537,10 +514,10 @@ function ReportForm({ user, setView }) {
             onClick={enviarParte} 
             disabled={enviando || isReportado(entidad)} 
             className={`w-full py-5 rounded-2xl font-black text-white shadow-2xl transition-all uppercase tracking-widest flex items-center justify-center gap-2 
-                ${enviando ? 'bg-slate-400 cursor-not-allowed opacity-50' : isReportado(entidad) ? 'bg-green-600 cursor-not-allowed' : !estadoHorario.permitido ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-900 hover:bg-blue-800'} active:scale-95`}
+                ${enviando ? 'bg-slate-400 cursor-not-allowed opacity-50' : isReportado(entidad) ? 'bg-green-600 cursor-not-allowed' : !estadoHorario.enHorario ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-900 hover:bg-blue-800'} active:scale-95`}
           >
-            {enviando ? <RefreshCw className="animate-spin" /> : isReportado(entidad) ? <CheckCircle size={20} /> : !estadoHorario.permitido ? <AlertTriangle size={20} /> : <Zap />}
-            {enviando ? 'ENVIANDO...' : isReportado(entidad) ? 'YA ENVIADO (LISTO)' : !estadoHorario.permitido ? 'ENVIAR (FUERA DE HORARIO)' : 'ENVIAR PARTE OFICIAL'}
+            {enviando ? <RefreshCw className="animate-spin" /> : isReportado(entidad) ? <CheckCircle size={20} /> : !estadoHorario.enHorario ? <AlertTriangle size={20} /> : <Zap />}
+            {enviando ? 'ENVIANDO...' : isReportado(entidad) ? 'YA ENVIADO (LISTO)' : !estadoHorario.enHorario ? 'ENVIAR (FUERA DE HORARIO)' : 'ENVIAR PARTE OFICIAL'}
           </button>
         </div>
       </div>
@@ -565,7 +542,7 @@ function ReportForm({ user, setView }) {
 
 function SupervisorDashboard({ user }) {
   const [reportes, setReportes] = useState([]);
-  const [fecha, setFecha] = useState(obtenerFechaLocal());
+  const [fecha, setFecha] = useState(obtenerFechaLocal()); // INICIO CON FECHA LOCAL
   const [modalFoto, setModalFoto] = useState(null);
   const [filtroTipo, setFiltroTipo] = useState('todos');
   const [verTodosHistorial, setVerTodosHistorial] = useState(false); 
@@ -579,9 +556,10 @@ function SupervisorDashboard({ user }) {
         .map(d => ({id: d.id, ...d.data()}))
         .filter(d => {
           if (verTodosHistorial) return true; 
+          // Corrección: Convertir timestamp a Date, luego a string LOCAL (YYYY-MM-DD) y comparar
           const fechaTimestamp = d.timestamp ? new Date(d.timestamp.seconds * 1000) : new Date();
           const fechaLocalDoc = obtenerFechaLocal(fechaTimestamp);
-          return fechaLocalDoc === fecha;
+          return fechaLocalDoc === fecha; // Comparación estricta de fecha local
         })
         .sort((a, b) => {
           const tA = a.timestamp?.seconds || Number.MAX_SAFE_INTEGER;
@@ -647,7 +625,6 @@ function SupervisorDashboard({ user }) {
               if (EXCEPCIONES_AREA[entidad] && EXCEPCIONES_AREA[entidad] !== areaName) return;
               
               const reporte = reportesDelDia.find(r => r.entidad === entidad);
-              
               if (reporte) {
                   areaTieneContenido = true;
                   const esSinNovedad = !reporte.novedad || reporte.novedad.toUpperCase().includes("SIN NOVEDAD") || reporte.novedad.toUpperCase() === "S/N";
