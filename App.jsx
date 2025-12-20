@@ -2,17 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { 
-  getFirestore, collection, addDoc, query, orderBy, 
-  onSnapshot, serverTimestamp, where 
+  getFirestore, collection, addDoc, onSnapshot, serverTimestamp 
 } from 'firebase/firestore';
 import { 
   Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
   UserCheck, ClipboardList, AlertTriangle, Camera, 
-  Image as ImageIcon, X, RefreshCw, Zap, User, Filter, Share2, 
-  CheckSquare, AlertCircle, WifiOff, Database, Lock 
+  Image as ImageIcon, X, RefreshCw, Zap, User, Database, Lock, Wifi, WifiOff 
 } from 'lucide-react';
 
-// --- TUS CREDENCIALES REALES ---
+// --- CONFIGURACIÓN DE FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
   authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
@@ -26,11 +24,14 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = 'bsf-la-paz-v1'; 
+const appId = 'bsf-la-paz-v1';
 
-// RUTA SIMPLE PARA EVITAR ERRORES DE PERMISOS COMPLEJOS
-// Usamos la ruta estándar requerida por la plataforma
-const COLLECTION_PATH = 'reports_v4_final'; 
+// RUTA NUEVA Y LIMPIA
+const COLLECTION_NAME = 'reportes_final_v5'; 
+// La ruta completa DEBE respetar la estructura de reglas de seguridad si existen, 
+// pero usaremos una colección raíz simple para máxima compatibilidad en modo prueba.
+// Si las reglas exigen la ruta artifacts, la usamos:
+const USE_ARTIFACTS_PATH = true; 
 
 // --- Constantes ---
 const AREAS = {
@@ -89,11 +90,10 @@ const EXCEPCIONES_AREA = {
 const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE LA SOCIEDAD.";
 
 // --- Utilidades ---
-const obtenerFechaString = () => {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+const obtenerFechaString = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
 
@@ -131,15 +131,15 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('login'); 
   const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [dbStatus, setDbStatus] = useState('Desconectado');
+  const [reportesGlobales, setReportesGlobales] = useState([]);
 
   useEffect(() => {
     const initAuth = async () => {
       try {
         await signInAnonymously(auth);
       } catch (error) { 
-        console.error("Auth Error:", error); 
-        setErrorMsg(`Error de Autenticación: ${error.message}`);
+        console.error("Auth:", error); 
         setLoading(false);
       }
     };
@@ -147,6 +147,25 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
       setLoading(false); 
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // LISTENER GLOBAL DE DATOS (El corazón de la persistencia)
+  useEffect(() => {
+    // Usamos la ruta larga si es necesario por las reglas de seguridad
+    const ref = USE_ARTIFACTS_PATH 
+        ? collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME)
+        : collection(db, COLLECTION_NAME);
+
+    // SIN ORDERBY, SIN WHERE -> Trae todo para evitar errores de índice
+    const unsubscribe = onSnapshot(ref, (snap) => {
+      const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
+      setReportesGlobales(docs);
+      setDbStatus(`Conectado. ${docs.length} registros cargados.`);
+    }, (error) => {
+      console.error("DB Error:", error);
+      setDbStatus(`Error de conexión: ${error.message}`);
     });
     return () => unsubscribe();
   }, []);
@@ -168,13 +187,15 @@ export default function App() {
         </div>
       </header>
 
-      {errorMsg && <div className="bg-red-600 text-white p-2 text-center text-xs font-bold">{errorMsg}</div>}
-
       <main className="flex-grow max-w-4xl mx-auto w-full p-4 pb-20">
         {view === 'login' && <LoginScreen setView={setView} />}
-        {view === 'form' && user && <ReportForm user={user} />}
-        {view === 'dashboard' && user && <SupervisorDashboard user={user} />}
+        {view === 'form' && user && <ReportForm user={user} reportesGlobales={reportesGlobales} />}
+        {view === 'dashboard' && user && <SupervisorDashboard user={user} reportesGlobales={reportesGlobales} />}
       </main>
+
+      <div className={`fixed bottom-0 w-full text-[10px] p-1 text-center border-t z-50 ${dbStatus.includes('Error') ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
+         {dbStatus}
+      </div>
     </div>
   );
 }
@@ -186,6 +207,7 @@ function LoginScreen({ setView }) {
         <Shield size={60} className="text-blue-900 mx-auto mb-4" />
         <h2 className="text-2xl font-black text-slate-900 uppercase">Bienvenido</h2>
         <div className="h-1 w-20 bg-yellow-500 mx-auto my-2"></div>
+        
         <div className="space-y-4">
           <button onClick={() => setView('form')} className="w-full p-4 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-xl flex items-center gap-4 transition-all group border border-blue-100">
             <div className="bg-white p-2 rounded-full group-hover:bg-blue-800"><UserCheck className="text-blue-900 group-hover:text-white"/></div>
@@ -201,7 +223,7 @@ function LoginScreen({ setView }) {
   );
 }
 
-function ReportForm({ user }) {
+function ReportForm({ user, reportesGlobales }) {
   const [area, setArea] = useState(AREAS.FINANCIERA);
   const [jefatura, setJefatura] = useState('');
   const [entidad, setEntidad] = useState('');
@@ -211,7 +233,6 @@ function ReportForm({ user }) {
   const [nombre, setNombre] = useState(localStorage.getItem('bsf_nombre') || '');
   const [foto, setFoto] = useState(null); 
   const [enviando, setEnviando] = useState(false);
-  const [misReportes, setMisReportes] = useState([]);
   const [horaActual, setHoraActual] = useState(new Date());
   const fileInputRef = useRef(null);
 
@@ -236,31 +257,19 @@ function ReportForm({ user }) {
 
   useEffect(() => {
     const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
+    // Filtrar los reportes de HOY para esta jefatura
+    const hoy = obtenerFechaString();
+    const misReportesHoy = reportesGlobales.filter(r => r.fecha_string === hoy && r.jefatura === jefatura);
+
     if (entidadesJefatura.length > 0) {
        let primeraPendiente = entidadesJefatura[0];
-       if (tipo !== 'extraordinario' && misReportes.length > 0) {
-           const pendiente = entidadesJefatura.find(e => !misReportes.some(r => r.entidad === e && r.tipo === tipo));
+       if (tipo !== 'extraordinario') {
+           const pendiente = entidadesJefatura.find(e => !misReportesHoy.some(r => r.entidad === e && r.tipo === tipo));
            if (pendiente) primeraPendiente = pendiente;
        }
        setEntidad(primeraPendiente);
     }
-  }, [jefatura, area, tipo, misReportes]);
-
-  // LECTURA DE BASE DE DATOS
-  useEffect(() => {
-    // Usamos el path correcto para persistencia: /artifacts/{appId}/public/data/{collectionName}
-    const q = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH);
-    const unsubscribe = onSnapshot(q, (snap) => {
-      const hoyString = obtenerFechaString();
-      const todos = snap.docs.map(d => d.data());
-      // Filtramos en memoria
-      setMisReportes(todos.filter(d => d.fecha_string === hoyString && d.jefatura === jefatura));
-    }, (error) => {
-        console.error("Error leyendo DB:", error);
-        alert(`Error de lectura: ${error.message}. Verifica tu internet.`);
-    });
-    return () => unsubscribe();
-  }, [jefatura]);
+  }, [jefatura, area, tipo, reportesGlobales]); // Dependencia clave: reportesGlobales se actualiza solo
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
@@ -269,7 +278,8 @@ function ReportForm({ user }) {
     }
   };
 
-  const yaReportado = misReportes.some(r => r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
+  const hoyString = obtenerFechaString();
+  const yaReportado = reportesGlobales.some(r => r.fecha_string === hoyString && r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
 
   const enviarParte = async () => {
     if (!navigator.onLine) { alert("Sin internet."); return; }
@@ -284,25 +294,31 @@ function ReportForm({ user }) {
     const docData = {
         area: areaFinal, jefatura, entidad, tipo, novedad, foto, grado, nombre,
         horaReferencia: horaRef,
-        fecha_string: fechaString, // Clave de persistencia
+        fecha_string: fechaString,
         timestamp: serverTimestamp(),
         userId: user.uid
     };
 
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), docData);
-      alert("¡GUARDADO CON ÉXITO!"); // Confirmación explícita
+      const ref = USE_ARTIFACTS_PATH 
+        ? collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME)
+        : collection(db, COLLECTION_NAME);
+        
+      await addDoc(ref, docData);
+      alert("REPORTE GUARDADO EXITOSAMENTE.");
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
     } catch (e) {
       console.error(e);
-      alert(`ERROR CRÍTICO AL GUARDAR: ${e.message}`); // Mostrar el error real
+      alert(`Error al guardar: ${e.message}`);
     }
     setEnviando(false);
   };
 
   const listaEntidades = ASIGNACIONES[area][jefatura] || [];
-  const completados = listaEntidades.filter(e => misReportes.some(r => r.entidad === e && r.tipo === tipo)).length;
+  const misReportesHoy = reportesGlobales.filter(r => r.fecha_string === obtenerFechaString() && r.jefatura === jefatura);
+  const completados = listaEntidades.filter(e => misReportesHoy.some(r => r.entidad === e && r.tipo === tipo)).length;
+  const progreso = (completados / listaEntidades.length) * 100;
 
   return (
     <div className="space-y-4 max-w-md mx-auto">
@@ -330,8 +346,8 @@ function ReportForm({ user }) {
                 <label className="text-[10px] font-bold text-slate-500 block">Entidad ({completados}/{listaEntidades.length})</label>
                 <select className="w-full p-2 bg-white border rounded text-xs" value={entidad} onChange={e=>setEntidad(e.target.value)}>
                    {listaEntidades.map(e => {
-                      const listo = misReportes.some(r => r.entidad === e && r.tipo === tipo);
-                      return <option key={e} value={e}>{listo ? '✅' : '⬜'} {e}</option>
+                      const listo = misReportesHoy.some(r => r.entidad === e && r.tipo === tipo);
+                      return <option key={e} value={e}>{listo ? '✅' : '⬜'} {e} {listo ? '(LISTO)' : ''}</option>
                    })}
                 </select>
              </div>
@@ -354,33 +370,23 @@ function ReportForm({ user }) {
              </button>
          </div>
       </div>
+      {tipo !== 'extraordinario' && <div className="h-1 bg-slate-200 rounded overflow-hidden"><div className="h-full bg-green-500 transition-all" style={{width: `${progreso}%`}}></div></div>}
     </div>
   );
 }
 
-function SupervisorDashboard({ user }) {
-  const [reportes, setReportes] = useState([]);
+function SupervisorDashboard({ reportesGlobales }) {
   const [fecha, setFecha] = useState(obtenerFechaString());
   const [filtro, setFiltro] = useState('todos');
+  const [verTodoHistorial, setVerTodoHistorial] = useState(false);
   const [modalFoto, setModalFoto] = useState(null);
 
-  useEffect(() => {
-    // TRAER TODO SIN FILTROS DE SERVIDOR para evitar problemas de indices
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), orderBy('timestamp', 'desc'));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
-      setReportes(docs);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Filtro en memoria para visualización
-  const reportesVisibles = reportes.filter(r => {
-     // SIEMPRE mostrar todo si la fecha coincide, o si es un día diferente y el usuario cambia la fecha en el input
-     if (r.fecha_string !== fecha) return false;
+  // Filtro en memoria
+  const reportesVisibles = reportesGlobales.filter(r => {
+     if (!verTodoHistorial && r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
      return true;
-  });
+  }).sort((a,b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
 
   const copiar = (texto) => {
     const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
@@ -396,10 +402,15 @@ function SupervisorDashboard({ user }) {
         t += `*${areaName}*\n`;
         if(reportesArea.length === 0) t += "Sin novedades registradas.\n";
         else {
-           reportesArea.forEach(r => {
-              if (r.novedad !== 'SIN NOVEDAD') t += `⚠ ${r.novedad} (${r.entidad})\n`;
-              else t += `✓ Sin novedad (${r.entidad})\n`;
-           });
+           const conNovedad = reportesArea.filter(r => r.novedad?.toUpperCase() !== 'SIN NOVEDAD' && r.novedad !== 'S/N');
+           if (conNovedad.length === 0) t += "Sin novedad.\n";
+           else {
+               conNovedad.forEach(r => {
+                  const hora = r.horaReferencia;
+                  const resp = r.grado ? ` - Resp: ${r.grado} ${r.nombre.split(' ')[0]}` : '';
+                  t += `Con novedad (${hora}): ${r.novedad} (${r.entidad}${resp})\n`;
+               });
+           }
         }
         t += "\n";
     });
@@ -407,17 +418,20 @@ function SupervisorDashboard({ user }) {
     copiar(t);
   };
 
+  const jefaturasTotales = new Set(Object.values(ASIGNACIONES).flatMap(area => Object.keys(area)));
+  const jefaturasReportadas = new Set(reportesVisibles.map(r => r.jefatura));
+  const oficialesFaltantes = [...jefaturasTotales].filter(j => !jefaturasReportadas.has(j));
+
   return (
     <div className="space-y-4 animate-in fade-in">
       {modalFoto && <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={()=>setModalFoto(null)}><img src={modalFoto} className="max-w-full max-h-full rounded border-2 border-white"/><button className="absolute top-4 right-4 bg-white p-2 rounded-full"><X/></button></div>}
       
       <div className="bg-white p-4 rounded-xl shadow-md border-l-4 border-emerald-600">
-         <h2 className="font-bold text-lg text-slate-800">Historial Completo</h2>
-         <p className="text-[10px] text-slate-500 mb-2">Seleccione una fecha para ver reportes anteriores</p>
+         <h2 className="font-bold text-lg text-slate-800">Panel de Control</h2>
          <div className="flex flex-col gap-2 mt-2">
-            <div className="flex gap-2 items-center">
-               <span className="text-xs font-bold uppercase text-slate-500">Fecha:</span>
-               <input type="date" className="p-2 border rounded text-xs flex-grow font-bold" value={fecha} onChange={e=>setFecha(e.target.value)}/>
+            <div className="flex gap-2">
+               <button onClick={()=>setVerTodoHistorial(!verTodoHistorial)} className={`p-2 border rounded ${verTodoHistorial ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`}><Database size={16}/></button>
+               <input type="date" className="p-2 border rounded text-xs flex-grow font-bold" value={fecha} onChange={e=>setFecha(e.target.value)} disabled={verTodoHistorial}/>
             </div>
             <select className="p-2 border rounded text-xs uppercase font-bold" value={filtro} onChange={e=>setFiltro(e.target.value)}>
                <option value="todos">VER TODOS</option>
@@ -429,6 +443,13 @@ function SupervisorDashboard({ user }) {
          </div>
          <p className="text-[10px] text-right mt-2 text-slate-400">Total visibles: {reportesVisibles.length}</p>
       </div>
+
+      {(filtro === 'apertura' || filtro === 'cierre') && (
+        <div className={`p-4 rounded-xl shadow border-l-4 ${oficialesFaltantes.length > 0 ? 'bg-red-50 border-red-500 text-red-800' : 'bg-green-50 border-green-500 text-green-800'}`}>
+            <p className="font-bold text-xs uppercase">Faltan {oficialesFaltantes.length} de {jefaturasTotales.size} Oficiales</p>
+            {oficialesFaltantes.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{oficialesFaltantes.map(j => <span key={j} className="text-[9px] bg-white border px-1 rounded">{j}</span>)}</div>}
+        </div>
+      )}
 
       <div className="space-y-3">
          {reportesVisibles.map(r => (
@@ -448,7 +469,7 @@ function SupervisorDashboard({ user }) {
                <button onClick={()=>copiar(`*${r.tipo.toUpperCase()}*\n${r.entidad}\n${r.novedad}\n${r.horaReferencia}`)} className="text-emerald-600"><Share2 size={18}/></button>
             </div>
          ))}
-         {reportesVisibles.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">No hay datos para la fecha seleccionada.</div>}
+         {reportesVisibles.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">No hay datos para mostrar.</div>}
       </div>
     </div>
   );
