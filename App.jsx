@@ -175,42 +175,45 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('login'); 
   const [loading, setLoading] = useState(true);
-  const [dbStatus, setDbStatus] = useState('Conectando...');
+  const [dbStatus, setDbStatus] = useState('Iniciando...');
   const [reportesGlobales, setReportesGlobales] = useState([]);
 
   useEffect(() => {
     const initAuth = async () => {
       try {
+        setDbStatus('Conectando Auth...');
         await signInAnonymously(auth);
       } catch (error) { 
-        console.error("Auth:", error); 
-        setDbStatus('Error de Autenticación');
+        console.error("Auth:", error);
+        setDbStatus(`Error Auth: ${error.code}`);
         setLoading(false);
       }
     };
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
+      if(u) setDbStatus(`Conectado: ${u.uid.slice(0,5)}...`);
       setLoading(false); 
-      if(u) setDbStatus('Conectado');
     });
     return () => unsubscribe();
   }, []);
 
-  // LISTENER GLOBAL DE DATOS
+  // MONITOR DE BASE DE DATOS
   useEffect(() => {
+    // Consulta sin filtros para evitar errores de índice
     const ref = USE_ARTIFACTS_PATH 
         ? collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME)
         : collection(db, COLLECTION_NAME);
-
-    // Listener sin filtros para evitar errores de índice
-    const unsubscribe = onSnapshot(ref, (snap) => {
+    const q = query(ref, orderBy('timestamp', 'desc'));
+    
+    const unsubscribe = onSnapshot(q, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
       setReportesGlobales(docs);
-      setDbStatus(`Sincronizado: ${docs.length} reportes.`);
+      setDbStatus(prev => `${prev.split('|')[0]} | DB OK: ${docs.length} registros.`);
     }, (error) => {
       console.error("DB Error:", error);
-      setDbStatus(`Error DB: ${error.message}`);
+      // ESTE ES EL MENSAJE QUE NECESITAMOS VER
+      setDbStatus(`ERROR DB CRÍTICO: ${error.code} - ${error.message}`);
     });
     return () => unsubscribe();
   }, []);
@@ -218,8 +221,13 @@ export default function App() {
   if (loading) return <div className="flex h-screen items-center justify-center bg-slate-900 text-white"><RefreshCw className="animate-spin" /></div>;
 
   return (
-    <div className="min-h-screen bg-slate-100 font-sans text-slate-900 flex flex-col">
-      <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50">
+    <div className="min-h-screen bg-slate-100 font-sans text-slate-900 flex flex-col relative pb-16">
+      {/* BARRA DE DIAGNÓSTICO FLOTANTE */}
+      <div className={`fixed top-0 w-full p-1 text-[10px] text-center z-[60] font-mono font-bold ${dbStatus.includes('ERROR') ? 'bg-red-600 text-white animate-pulse' : 'bg-green-800 text-green-100'}`}>
+         SISTEMA: {dbStatus}
+      </div>
+
+      <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50 mt-4">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-3">
             <Shield className="text-yellow-500 w-8 h-8" />
@@ -232,15 +240,11 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex-grow max-w-4xl mx-auto w-full p-4 pb-20">
+      <main className="flex-grow max-w-4xl mx-auto w-full p-4">
         {view === 'login' && <LoginScreen setView={setView} />}
-        {view === 'form' && user && <ReportForm user={user} reportesGlobales={reportesGlobales} />}
+        {view === 'form' && user && <ReportForm user={user} reportesGlobales={reportesGlobales} setDebugStatus={setDbStatus} />}
         {view === 'dashboard' && user && <SupervisorDashboard user={user} reportesGlobales={reportesGlobales} />}
       </main>
-
-      <div className={`fixed bottom-0 w-full text-[10px] p-1 text-center border-t z-50 ${dbStatus.includes('Error') ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
-         {dbStatus}
-      </div>
     </div>
   );
 }
@@ -252,8 +256,6 @@ function LoginScreen({ setView }) {
         <Shield size={60} className="text-blue-900 mx-auto mb-4" />
         <h2 className="text-2xl font-black text-slate-900 uppercase">Bienvenido</h2>
         <div className="h-1 w-20 bg-yellow-500 mx-auto my-2"></div>
-        <p className="text-sm text-slate-500 mb-6">Seleccione su perfil para ingresar</p>
-        
         <div className="space-y-4">
           <button onClick={() => setView('form')} className="w-full p-4 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-xl flex items-center gap-4 transition-all group border border-blue-100">
             <div className="bg-white p-2 rounded-full group-hover:bg-blue-800"><UserCheck className="text-blue-900 group-hover:text-white"/></div>
@@ -269,13 +271,12 @@ function LoginScreen({ setView }) {
   );
 }
 
-function ReportForm({ user, reportesGlobales }) {
+function ReportForm({ user, reportesGlobales, setDebugStatus }) {
   const [area, setArea] = useState(AREAS.FINANCIERA);
   const [jefatura, setJefatura] = useState('');
   const [entidad, setEntidad] = useState('');
   const [tipo, setTipo] = useState('apertura');
   const [novedad, setNovedad] = useState('SIN NOVEDAD');
-  
   const [grado, setGrado] = useState(localStorage.getItem('bsf_grado') || '');
   const [nombre, setNombre] = useState(localStorage.getItem('bsf_nombre') || '');
   const [foto, setFoto] = useState(null); 
@@ -308,11 +309,9 @@ function ReportForm({ user, reportesGlobales }) {
     else setTipo('extraordinario');
   }, [area]);
 
-  // Selección automática y filtrado de reportes de HOY en memoria
   useEffect(() => {
     const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
     const hoyString = obtenerFechaString();
-    // Filtramos de los globales los que son de hoy y de esta jefatura
     const misReportesHoy = reportesGlobales.filter(r => r.fecha_string === hoyString && r.jefatura === jefatura);
 
     if (entidadesJefatura.length > 0) {
@@ -341,6 +340,8 @@ function ReportForm({ user, reportesGlobales }) {
     if (yaReportado) { alert("Ya registrado hoy."); return; }
 
     setEnviando(true);
+    setDebugStatus("Enviando a Firebase...");
+    
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
     const horaRef = formatearHoraSimple(new Date()); 
     const fechaString = obtenerFechaString();
@@ -354,17 +355,20 @@ function ReportForm({ user, reportesGlobales }) {
     };
 
     try {
+      // Escritura directa
       const ref = USE_ARTIFACTS_PATH 
         ? collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME)
         : collection(db, COLLECTION_NAME);
         
       await addDoc(ref, docData);
-      alert("REPORTE GUARDADO EXITOSAMENTE.");
+      alert("¡GUARDADO CON ÉXITO!"); 
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
+      setDebugStatus("Guardado OK.");
     } catch (e) {
       console.error(e);
-      alert(`Error al guardar: ${e.message}`);
+      setDebugStatus(`ERROR GUARDADO: ${e.code}`);
+      alert(`ERROR CRÍTICO AL GUARDAR: ${e.message}\n\nREVISA: Configuración de Firebase -> Firestore Database -> Rules (Deben ser públicas para pruebas).`);
     }
     setEnviando(false);
   };
@@ -388,43 +392,36 @@ function ReportForm({ user, reportesGlobales }) {
                 <input className="w-1/3 p-2 border rounded text-xs font-bold uppercase" placeholder="Grado" value={grado} onChange={e=>setGrado(e.target.value)} />
                 <input className="w-2/3 p-2 border rounded text-xs uppercase" placeholder="Nombre Completo" value={nombre} onChange={e=>setNombre(e.target.value)} />
              </div>
-
              <div className="grid grid-cols-2 gap-2">
                 {Object.entries(AREAS).map(([k,v]) => (
                    <button key={k} onClick={()=>setArea(v)} className={`text-[10px] p-2 rounded border font-bold uppercase ${area===v ? 'bg-blue-900 text-white' : 'bg-slate-50 text-slate-500'}`}>{v.split(' ')[1]}</button>
                 ))}
              </div>
-
              <div className="bg-slate-50 p-2 rounded border">
                 <label className="text-[10px] font-bold text-slate-500 block">Jefatura</label>
                 <select className="w-full p-2 bg-white border rounded text-xs font-bold" value={jefatura} onChange={e=>setJefatura(e.target.value)}>
                    {Object.keys(ASIGNACIONES[area]||{}).map(j=><option key={j} value={j}>{j}</option>)}
                 </select>
              </div>
-
              <div className={`p-2 rounded border ${yaReportado ? 'bg-green-50 border-green-300' : 'bg-blue-50 border-blue-200'}`}>
                 <label className="text-[10px] font-bold text-slate-500 block">Entidad ({completados}/{listaEntidades.length})</label>
                 <select className="w-full p-2 bg-white border rounded text-xs" value={entidad} onChange={e=>setEntidad(e.target.value)}>
-                   {listaEntidades.map(e => {
+                   {(ASIGNACIONES[area][jefatura]||[]).map(e => {
                       const listo = misReportesHoy.some(r => r.entidad === e && r.tipo === tipo);
                       return <option key={e} value={e}>{listo ? '✅' : '⬜'} {e} {listo ? '(LISTO)' : ''}</option>
                    })}
                 </select>
              </div>
-
              <div className="grid grid-cols-2 gap-2">
                 <div><label className="text-[10px] font-bold text-slate-500">Tipo</label><select className="w-full p-2 border rounded text-xs font-bold" value={tipo} onChange={e=>setTipo(e.target.value)}><option value="apertura">APERTURA</option><option value="cierre">CIERRE</option><option value="extraordinario">EXTRAORDINARIO</option></select></div>
                 <div><label className="text-[10px] font-bold text-slate-500">Hora</label><div className="w-full p-2 bg-slate-100 border rounded text-xs font-mono text-center font-bold">{horaActual.toLocaleTimeString()}</div></div>
              </div>
-
              <div><label className="text-[10px] font-bold text-slate-500">Novedad</label><textarea className="w-full p-2 border rounded text-xs" value={novedad} onChange={e=>setNovedad(e.target.value)}/></div>
-
              <div className="border-2 border-dashed rounded p-3 text-center">
                 <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handleFile} />
                 {!foto ? <button onClick={()=>fileInputRef.current.click()} className="text-xs font-bold text-blue-800 flex flex-col items-center"><Camera size={24}/> TOMAR FOTO</button> : 
                 <div className="relative"><img src={foto} className="h-32 mx-auto rounded bg-black"/><button onClick={()=>setFoto(null)} className="absolute top-0 right-0 bg-red-600 text-white p-1 rounded-full"><X size={12}/></button></div>}
              </div>
-
              <button onClick={enviarParte} disabled={enviando || (yaReportado && tipo !== 'extraordinario')} className={`w-full py-4 rounded font-bold text-white text-xs uppercase shadow-lg ${enviando ? 'bg-slate-400' : yaReportado && tipo !== 'extraordinario' ? 'bg-green-600' : 'bg-blue-900'}`}>
                 {enviando ? 'GUARDANDO...' : yaReportado && tipo !== 'extraordinario' ? 'YA REGISTRADO' : 'ENVIAR REPORTE'}
              </button>
@@ -435,23 +432,22 @@ function ReportForm({ user, reportesGlobales }) {
   );
 }
 
-function SupervisorDashboard({ user, reportesGlobales }) {
+function SupervisorDashboard({ reportesGlobales }) {
   const [fecha, setFecha] = useState(obtenerFechaString());
   const [filtro, setFiltro] = useState('todos');
   const [verTodoHistorial, setVerTodoHistorial] = useState(false);
   const [modalFoto, setModalFoto] = useState(null);
 
-  // Filtros seguros (evitando crashes por datos undefined)
+  // Filtro en memoria
   const reportesVisibles = (reportesGlobales || []).filter(r => {
-     if (!r) return false;
-     if (!verTodoHistorial && r.fecha_string !== fecha) return false;
+     if (verTodoHistorial) return true;
+     if (r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
      return true;
   }).sort((a,b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
 
   const copiar = (texto) => {
-    const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
-    alert("Copiado.");
+    const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); alert("Copiado.");
   };
 
   const generarResumen = () => {
@@ -459,12 +455,9 @@ function SupervisorDashboard({ user, reportesGlobales }) {
     [AREAS.FINANCIERA, AREAS.VIP, AREAS.INSTALACIONES, AREAS.ETV].forEach(areaName => {
         const reportesArea = reportesVisibles.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === areaName);
         if(reportesArea.length === 0 && filtro !== 'todos') return;
-        
         t += `*${areaName}*\n`;
-        if(reportesArea.length === 0) {
-           if(filtro === 'todos') t += "(Pendiente)\n";
-           else t += "Sin novedades.\n";
-        } else {
+        if(reportesArea.length === 0) t += "Sin novedades registradas.\n";
+        else {
            const conNovedad = reportesArea.filter(r => r.novedad?.toUpperCase() !== 'SIN NOVEDAD' && r.novedad !== 'S/N');
            if (conNovedad.length === 0) t += "Sin novedad.\n";
            else {
@@ -488,14 +481,12 @@ function SupervisorDashboard({ user, reportesGlobales }) {
   return (
     <div className="space-y-4 animate-in fade-in">
       {modalFoto && <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={()=>setModalFoto(null)}><img src={modalFoto} className="max-w-full max-h-full rounded border-2 border-white"/><button className="absolute top-4 right-4 bg-white p-2 rounded-full"><X/></button></div>}
-      
       <div className="bg-white p-4 rounded-xl shadow-md border-l-4 border-emerald-600">
          <h2 className="font-bold text-lg text-slate-800">Panel de Control</h2>
          <div className="flex flex-col gap-2 mt-2">
             <div className="flex gap-2 items-center">
                <button onClick={()=>setVerTodoHistorial(!verTodoHistorial)} className={`p-2 border rounded ${verTodoHistorial ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`} title="Ver Historial Completo"><Database size={16}/></button>
                <input type="date" className="p-2 border rounded text-xs flex-grow font-bold" value={fecha} onChange={e=>setFecha(e.target.value)} disabled={verTodoHistorial}/>
-               <button onClick={()=>window.location.reload()} className="p-2 border rounded bg-slate-100" title="Recargar"><RefreshCw size={16}/></button>
             </div>
             <select className="p-2 border rounded text-xs uppercase font-bold" value={filtro} onChange={e=>setFiltro(e.target.value)}>
                <option value="todos">VER TODOS</option>
@@ -507,7 +498,7 @@ function SupervisorDashboard({ user, reportesGlobales }) {
          </div>
          <p className="text-[10px] text-right mt-2 text-slate-400">Total visibles: {reportesVisibles.length}</p>
       </div>
-
+      
       {(filtro === 'apertura' || filtro === 'cierre') && (
         <div className={`p-4 rounded-xl shadow border-l-4 ${oficialesFaltantes.length > 0 ? 'bg-red-50 border-red-500 text-red-800' : 'bg-green-50 border-green-500 text-green-800'}`}>
             <p className="font-bold text-xs uppercase">Faltan {oficialesFaltantes.length} de {jefaturasTotales.size} Oficiales</p>
@@ -518,17 +509,9 @@ function SupervisorDashboard({ user, reportesGlobales }) {
       <div className="space-y-3">
          {reportesVisibles.map(r => (
             <div key={r.id} className="bg-white p-3 rounded-xl shadow border-l-4 border-slate-300 flex gap-3 items-start">
-               <div className="w-12 h-12 bg-slate-200 rounded-lg overflow-hidden flex-shrink-0 cursor-pointer" onClick={()=>setModalFoto(r.foto)}>
-                  <img src={r.foto} className="w-full h-full object-cover" />
-               </div>
+               <div className="w-12 h-12 bg-slate-200 rounded-lg overflow-hidden flex-shrink-0 cursor-pointer" onClick={()=>setModalFoto(r.foto)}><img src={r.foto} className="w-full h-full object-cover" /></div>
                <div className="flex-grow min-w-0">
-                  <div className="flex justify-between">
-                     <span className={`text-[9px] font-bold px-2 rounded ${r.tipo==='apertura'?'bg-blue-100 text-blue-800':r.tipo==='cierre'?'bg-slate-100':'bg-red-100 text-red-800'}`}>{r.tipo.toUpperCase()}</span>
-                     <span className="text-[10px] font-mono text-slate-400">
-                        {r.horaReferencia}
-                        {verificarAuditoria(r) && <span className="ml-1 text-red-600 font-bold" title={`Real: ${verificarAuditoria(r).horaReal}`}>⚠</span>}
-                     </span>
-                  </div>
+                  <div className="flex justify-between"><span className={`text-[9px] font-bold px-2 rounded bg-slate-100`}>{r.tipo.toUpperCase()}</span><span className="text-[10px] font-mono text-slate-400">{r.horaReferencia}</span></div>
                   <h4 className="font-bold text-xs truncate mt-1">{r.entidad}</h4>
                   <p className="text-[9px] italic text-slate-500">{r.grado} {r.nombre}</p>
                   <p className="text-[10px] text-slate-700 mt-1 leading-tight">{r.novedad}</p>
@@ -536,7 +519,7 @@ function SupervisorDashboard({ user, reportesGlobales }) {
                <button onClick={()=>copiar(`*${r.tipo.toUpperCase()}*\n${r.entidad}\n${r.novedad}\n${r.horaReferencia}`)} className="text-emerald-600"><Share2 size={18}/></button>
             </div>
          ))}
-         {reportesVisibles.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">No hay datos para mostrar.</div>}
+         {reportesVisibles.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">No hay datos para la fecha seleccionada.</div>}
       </div>
     </div>
   );
