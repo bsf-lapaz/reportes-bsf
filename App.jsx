@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { 
   getFirestore, collection, addDoc, query, orderBy, 
-  onSnapshot, Timestamp, where, serverTimestamp 
+  onSnapshot, serverTimestamp, where 
 } from 'firebase/firestore';
-import { Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, Landmark, Building2, Truck, UserCheck, ClipboardList, AlertTriangle, Camera, Image as ImageIcon, X, RefreshCw, Zap, User, Filter, Share2 } from 'lucide-react';
+import { 
+  Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
+  UserCheck, ClipboardList, AlertTriangle, Camera, 
+  Image as ImageIcon, X, RefreshCw, Zap, User, Share2, WifiOff, AlertCircle, CheckSquare, XCircle 
+} from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE (TUS DATOS REALES) ---
 const firebaseConfig = {
@@ -18,13 +22,13 @@ const firebaseConfig = {
   measurementId: "G-0GKMSNMB4Q"
 };
 
+// Inicialización
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-// Identificador fijo para tu aplicación
 const appId = 'bsf-la-paz-v1';
 
-// --- Constantes ---
+// --- Constantes del Sistema ---
 const AREAS = {
   FINANCIERA: "Área Financiera y Bancaria",
   VIP: "Área Seguridad VIP",
@@ -54,7 +58,8 @@ const ASIGNACIONES = {
   [AREAS.INSTALACIONES]: {
     "Jefatura EPSAS": ["EPSAS Central", "Hospital Arco Iris", "MADISA", "FRIDOSA", "EMBOL"],
     "Jefatura COMIBOL": ["COMIBOL", "SALQUI", "ENDE", "Importaciones Prometeo"],
-    "Jefatura U. Católica": ["Universidad Católica Boliviana", "Vitalicia Seguros", "Urbanización La Rinconada", "Embajada Gran Bretaña", "Hipermaxi S.A."]
+    "Jefatura U. Católica": ["Universidad Católica Boliviana", "Vitalicia Seguros", "Urbanización La Rinconada", "Embajada Gran Bretaña", "Hipermaxi S.A."],
+    "Jefatura COBEE": ["COBEE (Principal)", "U. UNIFRANZ", "NOVARA", "FERROVIARIA ANDINA", "YPFB PLANTA SENKATA"]
   },
   [AREAS.VIP]: {
     "Jefatura VIP EPSAS": ["Seguridad VIP EPSAS Gerencia General"],
@@ -62,7 +67,6 @@ const ASIGNACIONES = {
   }
 };
 
-// Excepciones para corregir el área automáticamente
 const EXCEPCIONES_AREA = {
   "Urbanización Sol del Sur": AREAS.INSTALACIONES,
   "COTEL": AREAS.INSTALACIONES,
@@ -82,54 +86,74 @@ const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE LA SOCIEDAD.
 
 // --- Utilidades ---
 const formatearFecha = (timestamp) => {
-  if (!timestamp) return "Procesando...";
+  if (!timestamp) return "...";
   return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
     hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit'
   });
 };
 
+const obtenerHoraLegible = (timestamp, horaReferencia) => {
+  if (timestamp) {
+    return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
+      hour: '2-digit', minute: '2-digit', hour12: false
+    });
+  }
+  if (horaReferencia) {
+    if (horaReferencia.length <= 5) return horaReferencia;
+    const partes = horaReferencia.split(' ');
+    return partes.length > 1 ? partes[1] : horaReferencia;
+  }
+  return "...";
+};
+
 const obtenerFechaHoy = () => new Date().toISOString().split('T')[0];
 
-const esHorarioPermitido = (tipo) => {
-  if (tipo === 'extraordinario') return { permitido: true };
+const formatearHoraSimple = (fecha) => {
+  return fecha.getHours().toString().padStart(2, '0') + ':' + fecha.getMinutes().toString().padStart(2, '0');
+};
+
+const verificarHorario = (tipo) => {
+  if (tipo === 'extraordinario') return { enHorario: true };
   const ahora = new Date();
   const tiempoActual = ahora.getHours() * 60 + ahora.getMinutes(); 
 
   if (tipo === 'apertura') {
-    if (tiempoActual >= 540 && tiempoActual <= 560) return { permitido: true };
-    return { permitido: false, mensaje: "Horario Apertura (09:00 - 09:20)" };
+    if (tiempoActual >= 540 && tiempoActual <= 560) return { enHorario: true };
+    return { enHorario: false, mensaje: "Fuera de horario (09:00 - 09:20)" };
   }
   if (tipo === 'cierre') {
-    if (tiempoActual >= 960 && tiempoActual <= 980) return { permitido: true };
-    return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
+    if (tiempoActual >= 960 && tiempoActual <= 980) return { enHorario: true };
+    return { enHorario: false, mensaje: "Fuera de horario (16:00 - 16:20)" };
   }
-  return { permitido: true };
+  return { enHorario: true };
 };
 
-// Motor de imagen optimizado (evita pantalla blanca)
+// --- MOTOR DE IMAGEN ---
 const procesarImagenSegura = (file) => {
   return new Promise((resolve, reject) => {
-    const blobUrl = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(blobUrl);
-      const MAX_WIDTH = 800;
-      let width = img.width;
-      let height = img.height;
-      if (width > MAX_WIDTH) {
-        height *= MAX_WIDTH / width;
-        width = MAX_WIDTH;
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, width, height);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
-      resolve(dataUrl);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 800;
+        let width = img.width;
+        let height = img.height;
+        if (width > MAX_WIDTH) {
+          height *= MAX_WIDTH / width;
+          width = MAX_WIDTH;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.4));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
     };
-    img.onerror = () => { URL.revokeObjectURL(blobUrl); reject(new Error("Error imagen.")); };
-    img.src = blobUrl;
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
   });
 };
 
@@ -140,42 +164,93 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        await signInAnonymously(auth);
-      } catch (error) { console.error("Error auth:", error); }
+    let isMounted = true;
+    const unsubscribe = onAuthStateChanged(auth, (u) => { 
+      if (isMounted) {
+        setUser(u); 
+        setLoading(false); 
+      }
+    });
+
+    const attemptAuth = async () => {
+       try {
+         if (!auth.currentUser) {
+            await signInAnonymously(auth);
+         }
+       } catch (error) {
+         console.error("Auth error:", error);
+         if (isMounted) setLoading(false);
+       }
     };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => { setUser(u); setLoading(false); });
-    return () => unsubscribe();
+    attemptAuth();
+
+    const failsafe = setTimeout(() => {
+      if (isMounted && loading) setLoading(false);
+    }, 5000);
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      clearTimeout(failsafe);
+    };
   }, []);
 
-  if (loading) return <div className="flex h-screen items-center justify-center bg-slate-900 text-white font-bold">Cargando Sistema BSF...</div>;
+  const handleReconnect = () => {
+    setLoading(true);
+    signInAnonymously(auth).catch((e) => {
+      console.error(e);
+      setLoading(false);
+      alert("No se pudo reconectar. Verifique su internet.");
+    });
+  };
+
+  if (loading) return (
+    <div className="flex h-screen items-center justify-center bg-slate-900 text-white flex-col gap-4">
+      <RefreshCw className="animate-spin text-yellow-500" size={48} />
+      <p className="font-bold animate-pulse uppercase tracking-widest text-xs">Cargando Sistema BSF...</p>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-900 flex flex-col">
-      <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50">
+      <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50 border-b-2 border-yellow-600">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-3">
             <Shield className="text-yellow-500 w-8 h-8" />
             <div>
               <h1 className="font-bold text-lg leading-tight text-yellow-500">BATALLÓN DE SEGURIDAD FÍSICA</h1>
-              <p className="text-[10px] text-slate-300 tracking-wider uppercase">Sistema de Parte Diario</p>
+              <p className="text-[10px] text-slate-300 tracking-wider uppercase">Sistema de Parte Diario Digital</p>
             </div>
           </div>
           {view !== 'login' && (
-            <button onClick={() => setView('login')} className="text-xs bg-slate-800 p-2 rounded hover:bg-slate-700 border border-slate-700"><LogOut size={16} /></button>
+            <button onClick={() => setView('login')} className="text-xs bg-slate-800 p-2 rounded hover:bg-slate-700 border border-slate-700 flex items-center gap-2">
+              <LogOut size={16} /> <span className="hidden sm:inline">Salir</span>
+            </button>
           )}
         </div>
       </header>
+
       <main className="flex-grow max-w-4xl mx-auto w-full p-4">
         {view === 'login' && <LoginScreen setView={setView} />}
+        
+        {view !== 'login' && !user && (
+           <div className="flex flex-col items-center justify-center py-20 bg-white rounded-xl shadow-xl text-center p-6 animate-in fade-in">
+             <WifiOff size={64} className="text-red-500 mb-4" />
+             <h3 className="text-xl font-bold text-slate-800 mb-2">Conexión Interrumpida</h3>
+             <p className="text-sm text-slate-500 mb-6">El sistema necesita reconectar con el servidor.</p>
+             <button onClick={handleReconnect} className="bg-blue-900 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-blue-800 transition-colors flex items-center gap-2">
+               <RefreshCw size={20} /> RECONECTAR
+             </button>
+           </div>
+        )}
+
         {view === 'form' && user && <ReportForm user={user} setView={setView} />}
         {view === 'dashboard' && user && <SupervisorDashboard user={user} />}
       </main>
-      <footer className="bg-slate-900 text-slate-400 text-center p-6 text-xs mt-auto">
-        <p className="font-bold text-yellow-600 mb-2">"{LEMA}"</p>
-        <p>© 2025 Batallón de Seguridad Física - La Paz</p>
+
+      <footer className="bg-slate-900 text-slate-400 text-center p-6 text-xs mt-auto border-t border-slate-800">
+        <p className="font-bold text-yellow-600 mb-2 italic">"{LEMA}"</p>
+        <p className="opacity-50 uppercase tracking-tighter">© 2025 BSF - Comando Departamental de Policía La Paz</p>
       </footer>
     </div>
   );
@@ -183,16 +258,30 @@ export default function App() {
 
 function LoginScreen({ setView }) {
   return (
-    <div className="flex flex-col gap-8 items-center justify-center py-10 animate-fade-in">
-      <div className="text-center space-y-2"><h2 className="text-2xl font-bold text-slate-900 uppercase tracking-wide">Seleccione su Función</h2><div className="h-1 w-20 bg-yellow-500 mx-auto"></div></div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-2xl">
-        <button onClick={() => setView('form')} className="flex flex-col items-center p-8 bg-white rounded-lg shadow-md border-l-4 border-blue-900 hover:shadow-xl transition-all group">
-          <div className="bg-blue-50 p-4 rounded-full mb-4 group-hover:bg-blue-900 group-hover:text-white transition-colors"><Shield size={40} className="text-blue-900 group-hover:text-white" /></div>
-          <span className="font-bold text-lg text-slate-800 text-center leading-tight">JEFE / OFICIAL DE SEGURIDAD</span>
+    <div className="flex flex-col gap-8 items-center justify-center py-10 animate-in fade-in duration-700">
+      <div className="text-center space-y-4">
+        <div className="bg-white p-6 rounded-full shadow-2xl inline-block border-4 border-slate-900">
+          <Shield size={80} className="text-blue-900" />
+        </div>
+        <h2 className="text-3xl font-black text-slate-900 uppercase tracking-tighter">Acceso al Sistema</h2>
+        <div className="h-1.5 w-24 bg-yellow-500 mx-auto rounded-full"></div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-2xl px-4">
+        <button onClick={() => setView('form')} className="flex flex-col items-center p-8 bg-white rounded-2xl shadow-xl border-b-8 border-blue-900 hover:translate-y-[-4px] transition-all group active:scale-95">
+          <div className="bg-blue-50 p-5 rounded-2xl mb-4 group-hover:bg-blue-900 group-hover:text-white transition-colors">
+            <UserCheck size={48} className="text-blue-900 group-hover:text-white" />
+          </div>
+          <span className="font-black text-xl text-slate-800 text-center uppercase">Oficial de Seguridad</span>
+          <p className="text-xs text-slate-400 mt-2 font-medium">Registrar apertura, cierre o novedad</p>
         </button>
-        <button onClick={() => setView('dashboard')} className="flex flex-col items-center p-8 bg-white rounded-lg shadow-md border-l-4 border-emerald-700 hover:shadow-xl transition-all group">
-          <div className="bg-emerald-50 p-4 rounded-full mb-4 group-hover:bg-emerald-800 group-hover:text-white transition-colors"><List size={40} className="text-emerald-800 group-hover:text-white" /></div>
-          <span className="font-bold text-lg text-slate-800 text-center leading-tight">SUPERVISOR DE SERVICIO</span>
+
+        <button onClick={() => setView('dashboard')} className="flex flex-col items-center p-8 bg-white rounded-2xl shadow-xl border-b-8 border-emerald-700 hover:translate-y-[-4px] transition-all group active:scale-95">
+          <div className="bg-emerald-50 p-5 rounded-2xl mb-4 group-hover:bg-emerald-800 group-hover:text-white transition-colors">
+            <ClipboardList size={48} className="text-emerald-800 group-hover:text-white" />
+          </div>
+          <span className="font-black text-xl text-slate-800 text-center uppercase">Supervisor / Jefe</span>
+          <p className="text-xs text-slate-400 mt-2 font-medium">Verificar novedades y generar reportes</p>
         </button>
       </div>
     </div>
@@ -206,18 +295,27 @@ function ReportForm({ user, setView }) {
   const [tipo, setTipo] = useState('apertura');
   const [novedad, setNovedad] = useState('SIN NOVEDAD');
   
-  // Datos del Oficial
   const [grado, setGrado] = useState(localStorage.getItem('bsf_grado') || '');
   const [nombre, setNombre] = useState(localStorage.getItem('bsf_nombre') || '');
-
+  
   const [foto, setFoto] = useState(null); 
-  const [procesandoFoto, setProcesandoFoto] = useState(false);
   const [enviando, setEnviando] = useState(false);
-  const [horarioValido, setHorarioValido] = useState({ permitido: true });
   const [reportesHoyDetalle, setReportesHoyDetalle] = useState([]);
+  const [horaActual, setHoraActual] = useState(new Date());
+  
+  const [estadoHorario, setEstadoHorario] = useState({ enHorario: true });
   const fileInputRef = useRef(null);
 
-  // Persistir datos del oficial
+  useEffect(() => {
+    const timer = setInterval(() => {
+        const now = new Date();
+        setHoraActual(now);
+        setEstadoHorario(verificarHorario(tipo));
+    }, 1000);
+    setEstadoHorario(verificarHorario(tipo)); 
+    return () => clearInterval(timer);
+  }, [tipo]);
+
   useEffect(() => {
     localStorage.setItem('bsf_grado', grado);
     localStorage.setItem('bsf_nombre', nombre);
@@ -226,326 +324,472 @@ function ReportForm({ user, setView }) {
   useEffect(() => {
     const jefaturas = Object.keys(ASIGNACIONES[area] || {});
     if (jefaturas.length > 0) setJefatura(jefaturas[0]);
-    const hora = new Date().getHours();
+    const h = new Date().getHours();
     let sugerencia = 'extraordinario';
-    if (hora >= 8 && hora <= 10) sugerencia = 'apertura';
-    else if (hora >= 15 && hora <= 17) sugerencia = 'cierre';
+    if (h >= 8 && h <= 10) sugerencia = 'apertura';
+    else if (h >= 15 && h <= 17) sugerencia = 'cierre';
     setTipo(sugerencia);
   }, [area]);
 
   useEffect(() => {
-    setHorarioValido(esHorarioPermitido(tipo));
-    const interval = setInterval(() => setHorarioValido(esHorarioPermitido(tipo)), 15000);
-    return () => clearInterval(interval);
-  }, [tipo]);
+    const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
+    if (entidadesJefatura.length > 0) {
+       let primeraPendiente = entidadesJefatura[0];
+       if (tipo !== 'extraordinario' && reportesHoyDetalle.length > 0) {
+           const pendiente = entidadesJefatura.find(e => 
+               !reportesHoyDetalle.some(r => r.entidad === e && r.tipo === tipo)
+           );
+           if (pendiente) primeraPendiente = pendiente;
+       }
+       setEntidad(primeraPendiente);
+    }
+  }, [jefatura, area, tipo, reportesHoyDetalle]);
 
   useEffect(() => {
-    if (jefatura && ASIGNACIONES[area][jefatura]) setEntidad(ASIGNACIONES[area][jefatura][0]);
-  }, [jefatura, area]);
-
-  useEffect(() => {
-    if (!jefatura) return;
+    if (!user || !jefatura) return;
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), where('jefatura', '==', jefatura));
-    const unsub = onSnapshot(q, (snap) => {
+    const unsubscribe = onSnapshot(q, (snap) => {
       const hoy = obtenerFechaHoy();
-      const docsHoy = snap.docs.map(d => d.data()).filter(d => d.timestamp && new Date(d.timestamp.seconds * 1000).toISOString().split('T')[0] === hoy);
-      setReportesHoyDetalle(docsHoy);
+      const docs = snap.docs.map(d => d.data()).filter(d => {
+        const fechaDoc = d.timestamp ? new Date(d.timestamp.seconds * 1000).toISOString().split('T')[0] : hoy; 
+        return fechaDoc === hoy;
+      });
+      setReportesHoyDetalle(docs);
     });
-    return () => unsub();
-  }, [jefatura]);
+    return () => unsubscribe();
+  }, [user, jefatura]);
 
-  const handleFileChange = async (e) => {
+  const handleFile = async (e) => {
     const file = e.target.files[0];
     if (file) {
-      setProcesandoFoto(true);
       try {
-        const imagenMiniatura = await procesarImagenSegura(file);
-        setFoto(imagenMiniatura);
-      } catch (error) { alert("Error al procesar la imagen."); }
-      setProcesandoFoto(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+        const img = await procesarImagenSegura(file);
+        setFoto(img);
+      } catch (error) { alert("Error al procesar foto"); }
     }
   };
 
-  const yaReportado = reportesHoyDetalle.some(r => r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
-  const faltaFoto = !foto;
-  const faltaDatos = !grado.trim() || !nombre.trim();
-  const botonEnviarDeshabilitado = enviando || yaReportado || !horarioValido.permitido || faltaFoto || faltaDatos;
-
-  const generarReporte = async () => {
-    if (botonEnviarDeshabilitado) return;
-    setEnviando(true);
+  const enviarParte = async () => {
+    if (!user) {
+      alert("Error: Usuario no autenticado. Intente reconectar.");
+      return;
+    }
     
-    // CORRECCIÓN AUTOMÁTICA DE ÁREA
+    if (!navigator.onLine) {
+      alert("ERROR DE RED: No tiene conexión a internet. Verifique sus datos móviles.");
+      return;
+    }
+
+    if (!grado || !nombre || !foto) {
+      alert("ATENCIÓN: Debe llenar su Grado, Nombre y tomar la FOTO obligatoria.");
+      return;
+    }
+    
+    // NO BLOQUEA POR HORARIO, SOLO AVISA VISUALMENTE
+
+    setEnviando(true);
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
+    const horaRef = formatearHoraSimple(new Date()); 
+
+    const dbPromise = addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), {
+        area: areaFinal, 
+        jefatura, 
+        entidad, 
+        tipo, 
+        novedad, 
+        foto, 
+        grado, 
+        nombre,
+        horaReferencia: horaRef,
+        timestamp: serverTimestamp(),
+        userId: user.uid
+    });
+
+    const timeoutPromise = new Promise(resolve => setTimeout(resolve, 3000)); 
 
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), {
-        area: areaFinal, // Se guarda el área correcta
-        jefatura, entidad, tipo, novedad, foto, 
-        grado, nombre, 
-        timestamp: serverTimestamp(), userId: user.uid
-      });
+      await Promise.race([dbPromise, timeoutPromise]);
       
+      setEnviando(false);
+      alert("REPORTE REGISTRADO CORRECTAMENTE.");
       setNovedad('SIN NOVEDAD');
-      alert(`Reporte para "${entidad}" enviado exitosamente.\nResponsable: ${grado} ${nombre}`);
       
-      // AUTO-AVANCE SOLO SI NO ES EXTRAORDINARIO
       if (tipo !== 'extraordinario') {
-        const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
-        const currentIndex = entidadesJefatura.indexOf(entidad);
-        if (currentIndex >= 0 && currentIndex < entidadesJefatura.length - 1) {
-          setEntidad(entidadesJefatura[currentIndex + 1]);
+        const list = ASIGNACIONES[area][jefatura] || [];
+        const pendientes = list.filter(e => e !== entidad && !reportesHoyDetalle.some(r => r.entidad === e && r.tipo === tipo));
+        if (pendientes.length > 0) {
+            setEntidad(pendientes[0]);
         }
+      } else {
+        setFoto(null);
       }
-    } catch (e) { alert("Error al guardar."); }
-    setEnviando(false);
+
+    } catch (e) {
+      console.error(e);
+      setEnviando(false);
+      alert("Error técnico al intentar guardar. Verifique su conexión.");
+    }
   };
 
   const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
   const entidadesReportadasHoy = reportesHoyDetalle.filter(r => r.tipo === tipo).map(r => r.entidad);
-  const progreso = (entidadesReportadasHoy.length / entidadesJefatura.length) * 100;
+  const progreso = entidadesJefatura.length > 0 ? (entidadesReportadasHoy.length / entidadesJefatura.length) * 100 : 0;
+  
+  const isReportado = (ent) => reportesHoyDetalle.some(r => r.entidad === ent && r.tipo === tipo);
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white p-6 rounded-lg shadow-lg max-w-lg mx-auto border-t-4 border-blue-900">
-        <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
-          <FileText size={20} className="text-blue-900" /> REGISTRO DE PARTE DIARIO
+    <div className="max-w-md mx-auto space-y-4 animate-in slide-in-from-bottom-4 duration-500">
+      <div className="bg-white p-6 rounded-2xl shadow-xl border-t-8 border-blue-900">
+        <h3 className="text-xl font-black text-slate-800 mb-6 flex items-center gap-2 border-b pb-4">
+          <FileText className="text-blue-900" /> FORMULARIO DE PARTE
         </h3>
 
-        {!horarioValido.permitido && (
-          <div className="bg-red-50 border-l-4 border-red-600 p-4 mb-4 rounded text-xs text-red-600">
-            <div className="flex items-center gap-2 mb-1"><AlertTriangle size={14} /><p className="font-bold uppercase tracking-tight">HORARIO NO HABILITADO</p></div>
-            <p>{tipo === 'apertura' ? 'Apertura solo 09:00 a 09:20.' : 'Cierre solo 16:00 a 16:20.'} Use <b>EXTRAORDINARIO</b> fuera de hora.</p>
-          </div>
+        {!estadoHorario.enHorario && (
+            <div className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-4 rounded-lg flex items-start gap-3">
+                <AlertCircle className="text-amber-600 flex-shrink-0" size={24} />
+                <div>
+                    <h4 className="text-amber-800 font-bold uppercase text-xs">Aviso: Fuera de Horario</h4>
+                    <p className="text-amber-700 text-xs mt-1">{estadoHorario.mensaje}</p>
+                    <p className="text-amber-800 font-bold text-[10px]">Puede enviar el reporte, pero quedará registrado como extemporáneo.</p>
+                </div>
+            </div>
         )}
 
-        <div className="bg-blue-50 p-3 rounded border border-blue-100 mb-4">
-          <label className="block text-[10px] font-bold text-blue-800 uppercase mb-2 flex items-center gap-1"><User size={12}/> Responsable del Servicio</label>
-          <div className="grid grid-cols-3 gap-2">
-            <div className="col-span-1"><input type="text" placeholder="Grado" value={grado} onChange={(e) => setGrado(e.target.value)} className="w-full p-2 border border-blue-300 rounded text-xs font-bold" /></div>
-            <div className="col-span-2"><input type="text" placeholder="Nombre Completo" value={nombre} onChange={(e) => setNombre(e.target.value)} className="w-full p-2 border border-blue-300 rounded text-xs" /></div>
+        <div className="space-y-4">
+          <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <label className="text-[10px] font-black uppercase text-slate-500 block mb-2">Responsable del Servicio</label>
+            <div className="flex gap-2">
+              <input type="text" placeholder="Grado" value={grado} onChange={e => setGrado(e.target.value)} className="w-1/3 p-3 border rounded-lg text-sm font-bold uppercase" />
+              <input type="text" placeholder="Nombre Completo" value={nombre} onChange={e => setNombre(e.target.value)} className="w-2/3 p-3 border rounded-lg text-sm uppercase" />
+            </div>
           </div>
-        </div>
 
-        <div className="space-y-5">
           <div className="grid grid-cols-2 gap-2">
-            {Object.entries(AREAS).map(([key, label]) => (
-              <button key={key} onClick={() => setArea(label)} className={`p-2 text-[10px] font-bold rounded border uppercase whitespace-normal h-auto min-h-[40px] leading-tight ${area === label ? 'bg-blue-900 text-white border-blue-900' : 'bg-slate-50 text-slate-500'}`}>{label}</button>
+            {Object.entries(AREAS).map(([key, val]) => (
+              <button key={key} onClick={() => setArea(val)} className={`p-2 text-[10px] font-bold rounded-lg border uppercase ${area === val ? 'bg-blue-900 text-white border-blue-900' : 'bg-white text-slate-400 border-slate-200'}`}>{val}</button>
             ))}
           </div>
 
-          <div className="bg-slate-50 p-3 rounded border border-slate-200">
-            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Su Jefatura</label>
-            <select value={jefatura} onChange={(e) => setJefatura(e.target.value)} className="w-full p-2 border border-slate-300 rounded bg-white text-xs font-bold text-slate-800">
+          <div>
+            <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Jefatura / Entidad</label>
+            <select value={jefatura} onChange={e => setJefatura(e.target.value)} className="w-full p-3 border rounded-lg text-sm font-bold bg-white mb-2">
               {Object.keys(ASIGNACIONES[area] || {}).map(j => <option key={j} value={j}>{j}</option>)}
             </select>
-          </div>
-
-          <div className={`p-3 rounded border border-blue-200 ${yaReportado ? 'bg-green-50 border-green-300' : 'bg-blue-50'}`}>
-            <label className="block text-[10px] font-bold text-blue-800 uppercase mb-1">Entidad a Reportar</label>
-            <select value={entidad} onChange={(e) => setEntidad(e.target.value)} className="w-full p-2 border border-blue-300 rounded bg-white text-xs text-slate-800">
-              {entidadesJefatura.map(e => <option key={e} value={e}>{e} {reportesHoyDetalle.some(r => r.entidad === e && r.tipo === tipo) ? '✅' : ''}</option>)}
-              <option value="OTRA">OTRA JEFATURA</option>
-            </select>
+            
+            <div className="relative">
+                <select value={entidad} onChange={e => setEntidad(e.target.value)} className="w-full p-3 border rounded-lg text-sm bg-white appearance-none pr-8">
+                {ASIGNACIONES[area][jefatura]?.map(e => {
+                    const reportado = isReportado(e);
+                    return <option key={e} value={e}>{reportado ? '✅' : '⚠️'} {e} {reportado ? '(LISTO)' : ''}</option>;
+                })}
+                </select>
+                <div className="absolute right-3 top-3 pointer-events-none text-slate-400">▼</div>
+            </div>
+            
             {EXCEPCIONES_AREA[entidad] && <p className="text-[9px] text-blue-600 mt-1 font-bold">* Se registrará en: {EXCEPCIONES_AREA[entidad]}</p>}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-             <div className="space-y-1"><label className="block text-[10px] font-bold text-slate-500 uppercase">Tipo</label><select value={tipo} onChange={(e) => setTipo(e.target.value)} className="w-full p-2 border rounded text-xs font-bold"><option value="apertura">APERTURA</option><option value="cierre">CIERRE</option><option value="extraordinario">EXTRAORDINARIO</option></select></div>
-             <div className="space-y-1"><label className="block text-[10px] font-bold text-slate-500 uppercase">Hora</label><div className="p-2 bg-slate-100 border rounded text-xs font-mono text-slate-500 flex items-center gap-2"><Clock size={14}/> {new Date().toLocaleTimeString('es-BO', {hour:'2-digit', minute:'2-digit'})}</div></div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Tipo de Parte</label>
+              <select value={tipo} onChange={e => setTipo(e.target.value)} className="w-full p-3 border rounded-lg text-sm font-black uppercase bg-white">
+                <option value="apertura">Apertura</option>
+                <option value="cierre">Cierre</option>
+                <option value="extraordinario">Extraordinario</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Hora Actual</label>
+              <div className="p-3 bg-slate-100 rounded-lg text-sm font-mono flex items-center gap-2 font-bold text-blue-900">
+                <Clock size={16} /> {horaActual.toLocaleTimeString()}
+              </div>
+            </div>
           </div>
 
-          <div className="space-y-1"><label className="block text-[10px] font-bold text-slate-500 uppercase">Novedades</label><textarea value={novedad} onChange={(e) => setNovedad(e.target.value)} disabled={yaReportado} className="w-full p-2 border border-slate-300 rounded text-xs min-h-[60px]" /></div>
+          <div>
+            <label className="text-[10px] font-black uppercase text-slate-500 block mb-1">Informe de Novedades</label>
+            <textarea value={novedad} onChange={e => setNovedad(e.target.value)} className="w-full p-3 border rounded-lg text-sm min-h-[80px] uppercase font-medium" />
+          </div>
 
-          <div className={`p-4 rounded-lg border-2 ${foto ? 'border-green-200 bg-green-50' : 'border-blue-100 bg-blue-50'}`}>
-            <input type="file" accept="image/*" capture="environment" id="cameraInput" className="hidden" ref={fileInputRef} onChange={handleFileChange}/>
+          <div className="border-2 border-dashed border-slate-300 rounded-xl p-4 text-center bg-slate-50">
+            <input type="file" accept="image/*" capture="environment" className="hidden" ref={fileInputRef} onChange={handleFile} />
             {!foto ? (
-              <label htmlFor="cameraInput" className={`w-full py-4 bg-blue-700 text-white rounded font-bold flex flex-col items-center gap-1 cursor-pointer transition-transform active:scale-95 ${procesandoFoto ? 'opacity-50' : ''}`}>
-                {procesandoFoto ? <RefreshCw className="animate-spin" size={20}/> : <Camera size={20} />}
-                <span className="text-xs uppercase">{procesandoFoto ? 'Procesando...' : 'Tomar Foto de Evidencia'}</span>
-              </label>
+              <button onClick={() => fileInputRef.current.click()} className="w-full py-4 flex flex-col items-center gap-2 text-blue-900 font-black uppercase tracking-tighter hover:bg-blue-50 rounded-lg transition-colors">
+                <Camera size={32} />
+                Capturar Evidencia Fotográfica
+              </button>
             ) : (
-              <div className="flex items-center gap-3">
-                <img src={foto} alt="Vista" className="w-16 h-16 rounded border border-slate-300 object-cover bg-black" />
-                <div className="flex-grow">
-                  <p className="text-[10px] font-bold text-green-700 leading-tight">FOTO EN MEMORIA</p>
-                  <p className="text-[9px] text-slate-500 mb-2">Lista para enviarse con este reporte.</p>
-                  <button onClick={() => setFoto(null)} className="text-[9px] uppercase font-bold text-red-600 underline">Cambiar Foto</button>
-                </div>
+              <div className="relative">
+                <img src={foto} className="w-full h-48 object-cover rounded-lg shadow-inner bg-black" />
+                <div className="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-[10px] p-1 text-center">FOTO EN MEMORIA</div>
+                <button onClick={() => setFoto(null)} className="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full shadow-lg hover:bg-red-700"><X size={16}/></button>
               </div>
             )}
           </div>
 
-          <button onClick={generarReporte} disabled={botonEnviarDeshabilitado} className={`w-full py-4 font-bold rounded shadow-lg flex items-center justify-center gap-2 uppercase tracking-wide text-white transition-all text-xs ${botonEnviarDeshabilitado ? 'bg-slate-400 opacity-70' : 'bg-blue-900 hover:bg-blue-800'}`}>
-            {enviando ? 'ENVIANDO...' : yaReportado ? 'YA REPORTADO' : faltaFoto ? 'FALTA FOTO' : faltaDatos ? 'FALTAN DATOS' : 'ENVIAR PARTE'}
+          <button 
+            onClick={enviarParte} 
+            disabled={enviando || isReportado(entidad)} 
+            className={`w-full py-5 rounded-2xl font-black text-white shadow-2xl transition-all uppercase tracking-widest flex items-center justify-center gap-2 
+                ${enviando ? 'bg-slate-400 cursor-not-allowed opacity-50' : isReportado(entidad) ? 'bg-green-600 cursor-not-allowed' : !estadoHorario.enHorario ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-900 hover:bg-blue-800'} active:scale-95`}
+          >
+            {enviando ? <RefreshCw className="animate-spin" /> : isReportado(entidad) ? <CheckCircle size={20} /> : !estadoHorario.enHorario ? <AlertTriangle size={20} /> : <Zap />}
+            {enviando ? 'ENVIANDO...' : isReportado(entidad) ? 'YA ENVIADO (LISTO)' : !estadoHorario.enHorario ? 'ENVIAR (FUERA DE HORARIO)' : 'ENVIAR PARTE OFICIAL'}
           </button>
         </div>
       </div>
-      
-      {tipo !== 'extraordinario' ? (
-        <div className="bg-white p-4 rounded-lg shadow max-w-lg mx-auto">
-          <h4 className="font-bold text-slate-700 mb-2 flex items-center gap-2 text-xs uppercase"><ClipboardList size={16} /> Lista de Control ({tipo})</h4>
-          <div className="w-full bg-slate-200 rounded-full h-2 mb-4"><div className="bg-blue-600 h-2 rounded-full transition-all duration-500" style={{ width: `${progreso}%` }}></div></div>
-          <ul className="space-y-1">
-            {entidadesJefatura.map(e => {
-              const isDone = reportesHoyDetalle.some(r => r.entidad === e && r.tipo === tipo);
-              return <li key={e} className={`p-2 rounded flex justify-between items-center text-[10px] font-bold ${isDone ? 'bg-green-50 text-green-800' : 'bg-slate-50 text-slate-500'}`}><span>{e}</span>{isDone ? <CheckCircle size={14} className="text-green-600"/> : <span>Pendiente</span>}</li>
-            })}
-          </ul>
-        </div>
-      ) : (
-        <div className="bg-white p-4 rounded-lg shadow max-w-lg mx-auto border-t-2 border-yellow-500">
-          <h4 className="font-bold text-slate-700 mb-2 flex items-center gap-2 text-xs uppercase"><Zap size={16} className="text-yellow-600" /> Reportes Extraordinarios de Hoy</h4>
-          {reportesHoyDetalle.filter(r => r.tipo === 'extraordinario').length === 0 ? <p className="text-[10px] text-slate-400 italic">No hay reportes extraordinarios registrados hoy para esta jefatura.</p> : 
-            <ul className="space-y-1">{reportesHoyDetalle.filter(r => r.tipo === 'extraordinario').map((r, i) => <li key={i} className="p-2 bg-yellow-50 text-yellow-800 rounded text-[10px] font-bold flex justify-between"><span>{r.entidad}</span><span className="text-[9px] opacity-70">{formatearFecha(r.timestamp).split(',')[1]}</span></li>)}</ul>
-          }
+
+      {tipo !== 'extraordinario' && (
+        <div className="bg-white p-4 rounded-2xl shadow-lg border-l-4 border-yellow-500">
+          <h4 className="text-xs font-black uppercase text-slate-700 mb-2 flex justify-between">
+            <span className="flex items-center gap-2"><CheckSquare size={14}/> Avance de {tipo}: {entidadesReportadasHoy.length} de {entidadesJefatura.length}</span>
+            <span>{Math.round(progreso)}%</span>
+          </h4>
+          <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+            <div className="bg-yellow-500 h-full transition-all duration-500" style={{ width: `${progreso}%` }}></div>
+          </div>
+          {entidadesJefatura.length === entidadesReportadasHoy.length && (
+              <p className="text-center text-[10px] text-green-600 font-bold mt-2">¡JEFATURA COMPLETADA!</p>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function SupervisorDashboard() {
+function SupervisorDashboard({ user }) {
   const [reportes, setReportes] = useState([]);
   const [fecha, setFecha] = useState(obtenerFechaHoy());
-  const [fotoSeleccionada, setFotoSeleccionada] = useState(null);
+  const [modalFoto, setModalFoto] = useState(null);
   const [filtroTipo, setFiltroTipo] = useState('todos');
 
   useEffect(() => {
-    const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), orderBy('timestamp', 'desc'));
-    const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs.map(d => ({id: d.id, ...d.data()}));
-      setReportes(data.filter(d => {
-        if (!d.timestamp) return true;
-        const dFecha = new Date(d.timestamp.seconds * 1000).toISOString().split('T')[0];
-        return dFecha === fecha;
-      }));
+    if (!user) return;
+    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3');
+    
+    const unsubscribe = onSnapshot(colRef, (snap) => {
+      const docs = snap.docs
+        .map(d => ({id: d.id, ...d.data()}))
+        .filter(d => {
+          const fechaDoc = d.timestamp ? new Date(d.timestamp.seconds * 1000).toISOString().split('T')[0] : obtenerFechaHoy();
+          return fechaDoc === fecha;
+        })
+        .sort((a, b) => {
+          const tA = a.timestamp?.seconds || Number.MAX_SAFE_INTEGER;
+          const tB = b.timestamp?.seconds || Number.MAX_SAFE_INTEGER;
+          return tB - tA;
+        });
+      setReportes(docs);
     });
-    return () => unsub();
-  }, [fecha]);
+    return () => unsubscribe();
+  }, [user, fecha]);
 
   const reportesFiltrados = reportes.filter(r => filtroTipo === 'todos' ? true : r.tipo === filtroTipo);
 
-  const generarResumenComandante = () => {
-    const grupos = { [AREAS.FINANCIERA]: [], [AREAS.VIP]: [], [AREAS.INSTALACIONES]: [], [AREAS.ETV]: [] };
-    reportesFiltrados.forEach(r => { 
-      if(grupos[r.area]) grupos[r.area].push(r); 
-      else if (grupos[AREAS.FINANCIERA]) grupos[AREAS.FINANCIERA].push(r); 
-    });
+  const copiarParte = (r) => {
+    const hora = obtenerHoraLegible(r.timestamp, r.horaReferencia);
+    const titulo = r.tipo === 'extraordinario' ? "REPORTE EXTRAORDINARIO" : `PARTE INDIVIDUAL (${r.tipo.toUpperCase()})`;
     
-    // Títulos Corregidos
+    const texto = `*${titulo}*\n` +
+      `*Jefatura:* ${r.jefatura}\n` +
+      `*Entidad:* ${r.entidad}\n` +
+      `*Resp:* ${r.grado} ${r.nombre}\n` +
+      `*Hora:* ${hora}\n` +
+      `*Novedad:* ${r.novedad}\n` +
+      `"${LEMA}"`;
+      
+    const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
+    alert("Reporte individual copiado.");
+  };
+
+  const generarResumenComandante = () => {
     let titulo = "PARTE GENERAL";
     if (filtroTipo === 'apertura') titulo = "REPORTE DE APERTURA DE ENTIDADES";
     else if (filtroTipo === 'cierre') titulo = "REPORTE DE CIERRE DE ENTIDADES";
     else if (filtroTipo === 'extraordinario') titulo = "REPORTES EXTRAORDINARIOS";
 
     let texto = `*${titulo} - ${fecha}*\n\n`;
-    [AREAS.FINANCIERA, AREAS.VIP, AREAS.INSTALACIONES, AREAS.ETV].forEach(areaName => {
-      const reportsInArea = grupos[areaName];
-      if (filtroTipo !== 'todos' && (!reportsInArea || reportsInArea.length === 0)) return;
-      texto += `*${areaName}.*\n`;
-      if (!reportsInArea || reportsInArea.length === 0) {
-         if (filtroTipo === 'todos') texto += `(Pendiente de reportes)\n\n`;
-         else texto += `Sin novedades.\n\n`;
-      } else {
-        const conNovedad = reportsInArea.filter(r => { const nov = r.novedad ? r.novedad.toUpperCase().trim() : ""; return !nov.includes("SIN NOVEDAD") && nov !== "S/N" && nov !== "."; });
-        if (conNovedad.length === 0) texto += `Sin novedad.\n\n`;
-        else { 
-            conNovedad.forEach((r, i) => {
-                const hora = formatearFecha(r.timestamp).split(',')[1]?.trim() || '';
-                const responsable = r.grado && r.nombre ? ` - Resp: ${r.grado} ${r.nombre}` : '';
-                texto += `Con novedad (${hora}): ${r.novedad} (${r.entidad}${responsable}).\n`;
-            }); 
-            texto += `\n`; 
-        }
-      }
-    });
-    texto += `*TOTAL REPORTES:* ${reportesFiltrados.length}\n_${LEMA}_`;
-    copiarAlPortapapeles(texto, `Copiado: ${titulo}`);
-  };
-
-  const copiarReporteIndividual = (r) => {
-    const hora = formatearFecha(r.timestamp).split(',')[1]?.trim() || '';
-    // Título corregido para individual
-    const titulo = r.tipo === 'extraordinario' ? "REPORTE EXTRAORDINARIO" : `PARTE INDIVIDUAL (${r.tipo.toUpperCase()})`;
     
-    let texto = `*${titulo}*\n` +
-      `*Jefatura:* ${r.jefatura}\n` +
-      `*Entidad:* ${r.entidad}\n`;
-    if (r.grado && r.nombre) texto += `*Responsable:* ${r.grado} ${r.nombre}\n`;
-    texto += `*Hora:* ${hora}\n` +
-      `*Área:* ${r.area}\n` +
-      `*Novedad:* ${r.novedad}\n` +
-      `_${LEMA}_`;
-    copiarAlPortapapeles(texto, "Reporte individual copiado.");
+    const grupos = { [AREAS.FINANCIERA]: [], [AREAS.VIP]: [], [AREAS.INSTALACIONES]: [], [AREAS.ETV]: [] };
+    
+    // Obtener los reportes filtrados
+    const reportesDelDia = reportes.filter(r => r.tipo === (filtroTipo === 'todos' ? r.tipo : filtroTipo));
+
+    // Iterar por TODAS las asignaciones esperadas (Base Teórica)
+    [AREAS.FINANCIERA, AREAS.VIP, AREAS.INSTALACIONES, AREAS.ETV].forEach(areaName => {
+      // Filtrar Jefaturas de esta Área
+      const jefaturasDelArea = Object.entries(ASIGNACIONES[areaName] || {});
+      
+      // Si el filtro no es TODOS y no hay reportes, ¿mostramos el área? 
+      // El usuario quiere ver faltantes, así que SI mostramos si es Apertura/Cierre.
+      if (filtroTipo === 'extraordinario') {
+         // Para extraordinarios solo mostramos lo que hubo
+         const reportsInArea = reportesDelDia.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === areaName);
+         if (reportsInArea.length > 0) {
+            texto += `*${areaName}.*\n`;
+            reportsInArea.forEach(r => {
+                const hora = obtenerHoraLegible(r.timestamp, r.horaReferencia);
+                const resp = r.grado ? ` - Resp: ${r.grado} ${r.nombre.split(' ')[0]}` : '';
+                texto += `Con novedad (${hora}): ${r.novedad} (${r.entidad}${resp}).\n`;
+            });
+            texto += `\n`;
+         }
+         return;
+      }
+
+      // Para Apertura/Cierre/Todos: Listamos TODAS las entidades
+      texto += `*${areaName}.*\n`;
+      let areaTieneContenido = false;
+      let novedadesDelArea = [];
+
+      // Recolectar datos
+      jefaturasDelArea.forEach(([nombreJefatura, listaEntidades]) => {
+          listaEntidades.forEach(entidad => {
+              if (EXCEPCIONES_AREA[entidad] && EXCEPCIONES_AREA[entidad] !== areaName) return;
+              const reporte = reportesDelDia.find(r => r.entidad === entidad);
+              if (reporte) {
+                  areaTieneContenido = true;
+                  const esSinNovedad = !reporte.novedad || reporte.novedad.toUpperCase().includes("SIN NOVEDAD") || reporte.novedad.toUpperCase() === "S/N";
+                  if (!esSinNovedad) {
+                      const hora = obtenerHoraLegible(reporte.timestamp, reporte.horaReferencia);
+                      const resp = reporte.grado ? ` - Resp: ${reporte.grado} ${reporte.nombre.split(' ')[0]}` : '';
+                      novedadesDelArea.push(`Con novedad (${hora}): ${reporte.novedad} (${entidad}${resp}).`);
+                  }
+              }
+          });
+      });
+      
+      // Manejar excepciones inversas (entidades reasignadas a esta área)
+      Object.entries(EXCEPCIONES_AREA).forEach(([entidad, areaDestino]) => {
+          if (areaDestino === areaName) {
+              const reporte = reportesDelDia.find(r => r.entidad === entidad);
+              if (reporte) {
+                  areaTieneContenido = true;
+                  const esSinNovedad = !reporte.novedad || reporte.novedad.toUpperCase().includes("SIN NOVEDAD") || reporte.novedad.toUpperCase() === "S/N";
+                  if (!esSinNovedad) {
+                      const hora = obtenerHoraLegible(reporte.timestamp, reporte.horaReferencia);
+                      novedadesDelArea.push(`Con novedad (${hora}): ${reporte.novedad} (${entidad}).`);
+                  }
+              }
+          }
+      });
+
+      // LÓGICA DE RESUMEN INTELIGENTE
+      if (areaTieneContenido) {
+          if (novedadesDelArea.length === 0) {
+              // Si hay contenido pero 0 novedades = Todo Sin Novedad
+              texto += `Sin novedad.\n`;
+          } else {
+              // Si hay novedades, las listamos una por una
+              novedadesDelArea.forEach(n => texto += `${n}\n`);
+          }
+      } else {
+          // Si no hay ningún reporte en toda el área (pero estamos en horario de reporte)
+          if (filtroTipo !== 'todos') { 
+               // Aquí podríamos listar las que faltan, o dejarlo en blanco si se prefiere ver en el panel.
+               // Según instrucción: "si esta sin novedad tooodos... unicamente debe decir sin novedad".
+               // Asumiremos que si no hay nada, está pendiente, no "sin novedad".
+               texto += `(Pendiente de reportes)\n`;
+          } else {
+               // En vista "Todos", si no hay nada, puede ser que no sea hora
+               texto += `Sin novedades registradas.\n`;
+          }
+      }
+
+      texto += `\n`;
+    });
+    
+    texto += `*TOTAL REPORTES RECIBIDOS:* ${reportesFiltrados.length}\n"${LEMA}"`;
+    const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); alert(`Copiado: ${titulo}`);
   };
 
-  const copiarAlPortapapeles = (texto, mensaje) => {
-    const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); alert(mensaje);
-  };
+  const totalEntidadesEsperadas = Object.values(ASIGNACIONES).reduce((acc, curr) => acc + Object.values(curr).flat().length, 0);
+  
+  // Cálculo preciso de faltantes basado solo en las jefaturas oficiales (20 oficiales)
+  const jefaturasTotales = new Set(Object.values(ASIGNACIONES).flatMap(area => Object.keys(area)));
+  const jefaturasReportadas = new Set(reportesFiltrados.map(r => r.jefatura));
+  const oficialesFaltantes = [...jefaturasTotales].filter(j => !jefaturasReportadas.has(j));
 
   return (
-    <div className="space-y-6 animate-fade-in relative">
-      {fotoSeleccionada && (
-        <div className="fixed inset-0 z-[100] bg-black bg-opacity-90 flex items-center justify-center p-4" onClick={() => setFotoSeleccionada(null)}>
-          <div className="relative max-w-3xl w-full flex flex-col items-center">
-            <button className="absolute top-2 right-2 text-white bg-red-600 rounded-full p-2" onClick={(e) => {e.stopPropagation(); setFotoSeleccionada(null);}}><X size={24}/></button>
-            <img src={fotoSeleccionada.foto} alt="Evidencia" className="max-h-[80vh] w-auto rounded shadow-lg border-2 border-white object-contain"/>
-            <div className="bg-white p-3 mt-2 rounded text-center w-full max-w-md">
-              <p className="font-bold text-lg">{fotoSeleccionada.entidad}</p>
-              <p className="text-sm text-slate-500 mb-1">{formatearFecha(fotoSeleccionada.timestamp)}</p>
-              {fotoSeleccionada.grado && <p className="text-xs font-bold text-blue-800">Resp: {fotoSeleccionada.grado} {fotoSeleccionada.nombre}</p>}
-            </div>
+    <div className="space-y-6 animate-in fade-in duration-500">
+      {modalFoto && (
+        <div className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center p-4" onClick={() => setModalFoto(null)}>
+          <div className="relative w-full max-w-lg">
+            <img src={modalFoto} className="w-full h-auto rounded-lg shadow-2xl border-2 border-white" />
+            <button className="absolute -top-4 -right-4 bg-white rounded-full p-2 shadow-lg" onClick={() => setModalFoto(null)}><X size={24} className="text-red-600" /></button>
           </div>
         </div>
       )}
-      <div className="flex flex-col md:flex-row justify-between items-center bg-white p-6 rounded-lg shadow-sm border-l-4 border-emerald-700">
-        <div><h2 className="text-xl font-bold text-slate-800">CENTRAL DE NOVEDADES</h2><p className="text-slate-500 text-sm">Consolidación de Partes Diarios</p></div>
-        <div className="flex flex-col gap-2 mt-4 md:mt-0 items-end">
-          <div className="flex gap-2">
-             <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} className="p-2 border rounded text-slate-700 text-xs" />
-             <select value={filtroTipo} onChange={(e) => setFiltroTipo(e.target.value)} className="p-2 border rounded text-slate-700 text-xs font-bold uppercase bg-slate-50">
-               <option value="todos">VER TODOS</option>
-               <option value="apertura">SOLO APERTURA</option>
-               <option value="cierre">SOLO CIERRE</option>
-               <option value="extraordinario">SOLO EXTRAORDINARIOS</option>
-             </select>
-          </div>
-          <button onClick={generarResumenComandante} className="bg-slate-800 text-white px-4 py-2 rounded flex items-center gap-2 text-sm font-bold shadow-md w-full justify-center"><Copy size={16} /> COPIAR {filtroTipo === 'todos' ? 'GENERAL' : filtroTipo === 'extraordinario' ? 'EXTRAORDINARIOS' : filtroTipo.toUpperCase()}</button>
-        </div>
-      </div>
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead className="bg-slate-100 text-slate-600 uppercase"><tr><th className="p-3 text-left">Hora</th><th className="p-3 text-left">Tipo</th><th className="p-3 text-left">Resp.</th><th className="p-3 text-left">Entidad</th><th className="p-3 text-left">Novedad</th><th className="p-3 text-center">Acciones</th></tr></thead>
-            <tbody className="divide-y divide-slate-100">
-              {reportesFiltrados.length === 0 ? <tr><td colSpan="7" className="p-8 text-center text-slate-400">No hay reportes para este filtro.</td></tr> :
-              reportesFiltrados.map(r => (
-                <tr key={r.id} className="hover:bg-slate-50">
-                  <td className="p-3 font-mono text-slate-500 font-bold">{r.timestamp ? formatearFecha(r.timestamp).split(',')[1] : '...'}</td>
-                  <td className="p-3 font-bold text-slate-600 uppercase text-[10px]">{r.tipo}</td>
-                  <td className="p-3 text-slate-700 text-[10px]">{r.grado ? `${r.grado} ${r.nombre.split(' ')[0]}` : '-'}</td>
-                  <td className="p-3 font-medium text-slate-900">{r.entidad}</td>
-                  <td className={`p-3 truncate max-w-xs ${!r.novedad.toUpperCase().includes('SIN NOVEDAD') ? 'text-red-600 font-bold' : 'text-slate-500'}`}>{r.novedad}</td>
-                  <td className="p-3 text-center flex justify-center gap-1">
-                    {r.foto && <button onClick={() => setFotoSeleccionada(r)} className="p-2 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-600 hover:text-white transition-colors" title="Ver Evidencia"><ImageIcon size={14} /></button>}
-                    <button onClick={() => copiarReporteIndividual(r)} className="p-2 bg-emerald-50 text-emerald-600 rounded-full hover:bg-emerald-600 hover:text-white transition-colors" title="Copiar Este Reporte"><Copy size={14} /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
 
-function ResumenCard({ titulo, count, icon }) {
-  return (
-    <div className="bg-white p-3 rounded shadow-sm border-b-4 border-slate-200 flex justify-between items-center">
-      <div><span className="text-[10px] font-bold text-slate-400 uppercase">{titulo}</span><div className="text-xl font-bold text-slate-800">{count}</div></div>{icon}
+      <div className="bg-white p-6 rounded-2xl shadow-xl border-l-8 border-emerald-700 flex flex-col sm:flex-row justify-between items-center gap-4">
+        <div><h2 className="text-2xl font-black text-slate-800 uppercase tracking-tighter">Central de Novedades</h2><p className="text-slate-400 text-xs font-bold">Resumen Diario de Seguridad</p></div>
+        <div className="flex flex-col gap-2 items-end w-full sm:w-auto">
+          <div className="flex gap-2 w-full">
+            <input type="date" value={fecha} onChange={e => setFecha(e.target.value)} className="p-2 border rounded-xl font-bold bg-slate-50 text-xs w-full" />
+            <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} className="p-2 border rounded-xl font-bold bg-slate-50 text-xs uppercase w-full">
+              <option value="todos">Todos</option>
+              <option value="apertura">Apertura</option>
+              <option value="cierre">Cierre</option>
+              <option value="extraordinario">Novedad</option>
+            </select>
+          </div>
+          <button onClick={generarResumenComandante} className="bg-slate-800 text-white px-4 py-3 rounded-xl flex items-center justify-center gap-2 text-xs font-bold shadow-md w-full hover:bg-slate-700 transition-colors uppercase">
+            <Copy size={14} /> Copiar Resumen
+          </button>
+        </div>
+      </div>
+
+      {/* PANEL DE CONTROL DE ASISTENCIA (JEFATURAS) */}
+      {(filtroTipo === 'apertura' || filtroTipo === 'cierre') && (
+        <div className={`p-4 rounded-xl shadow-md border-l-4 flex flex-col gap-2 ${oficialesFaltantes.length > 0 ? 'bg-red-50 border-red-500 text-red-800' : 'bg-green-50 border-green-500 text-green-800'}`}>
+            <div className="flex justify-between items-center">
+                <div>
+                    <h4 className="font-bold uppercase text-xs">Control de Oficiales ({filtroTipo})</h4>
+                    <p className="text-xs mt-1">Reportados: <b>{jefaturasTotales.size - oficialesFaltantes.length}</b> / Total Oficiales: <b>{jefaturasTotales.size}</b></p>
+                </div>
+                <div className="text-right">
+                    <span className="text-2xl font-black">{Math.round(((jefaturasTotales.size - oficialesFaltantes.length) / jefaturasTotales.size) * 100)}%</span>
+                </div>
+            </div>
+            {oficialesFaltantes.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-red-200">
+                    <p className="text-[10px] font-bold mb-1">OFICIALES PENDIENTES:</p>
+                    <div className="flex flex-wrap gap-1">
+                        {oficialesFaltantes.map(j => (
+                            <span key={j} className="text-[9px] bg-white px-2 py-1 rounded border border-red-200 text-red-600">{j}</span>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+      )}
+
+      <div className="grid gap-4">
+        {reportesFiltrados.length === 0 ? <div className="text-center py-20 bg-white rounded-2xl text-slate-300 font-bold uppercase border-2 border-dashed">Sin reportes para este filtro</div> : 
+        reportesFiltrados.map(r => (
+          <div key={r.id} className="bg-white p-4 rounded-2xl shadow-md border-r-4 border-slate-200 flex items-center gap-4 hover:shadow-lg transition-shadow relative overflow-hidden">
+            <div className={`absolute top-0 left-0 w-1 h-full ${r.tipo === 'apertura' ? 'bg-blue-500' : r.tipo === 'cierre' ? 'bg-slate-500' : 'bg-red-500'}`}></div>
+            <div className="w-16 h-16 bg-slate-100 rounded-xl overflow-hidden cursor-pointer flex-shrink-0 border border-slate-200" onClick={() => setModalFoto(r.foto)}>
+              <img src={r.foto} className="w-full h-full object-cover" />
+            </div>
+            <div className="flex-grow min-w-0">
+              <div className="flex justify-between items-start mb-1">
+                <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${r.tipo === 'apertura' ? 'bg-blue-100 text-blue-800' : r.tipo === 'cierre' ? 'bg-slate-100 text-slate-800' : 'bg-red-100 text-red-800'}`}>{r.tipo}</span>
+                <span className="text-[10px] font-mono text-slate-500 font-bold flex items-center gap-1">
+                  <Clock size={10} />
+                  {obtenerHoraLegible(r.timestamp, r.horaReferencia)}
+                </span>
+              </div>
+              <h4 className="font-black text-xs text-slate-900 truncate uppercase mt-1">{r.entidad}</h4>
+              <p className="text-[9px] text-slate-500 font-bold italic truncate">Resp: {r.grado} {r.nombre}</p>
+              <p className={`text-[10px] font-medium leading-tight mt-1 ${r.novedad?.toUpperCase() !== 'SIN NOVEDAD' ? 'text-red-600 font-black bg-red-50 p-1 rounded' : 'text-slate-600'}`}>{r.novedad}</p>
+            </div>
+            <button onClick={() => copiarParte(r)} className="p-2 bg-emerald-50 text-emerald-700 rounded-xl hover:bg-emerald-700 hover:text-white transition-colors self-center shadow-sm" title="Copiar reporte individual">
+              <Share2 size={18}/>
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
