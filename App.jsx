@@ -3,16 +3,16 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { 
   getFirestore, collection, addDoc, query, orderBy, 
-  onSnapshot, serverTimestamp, where 
+  onSnapshot, serverTimestamp 
 } from 'firebase/firestore';
 import { 
   Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
   UserCheck, ClipboardList, AlertTriangle, Camera, 
   Image as ImageIcon, X, RefreshCw, Zap, User, Filter, Share2, 
-  CheckSquare, AlertCircle, WifiOff, Calendar, Database, Lock 
+  CheckSquare, AlertCircle, WifiOff, Database, Lock 
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE (TUS DATOS REALES) ---
+// --- CONFIGURACIÓN DE FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
   authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
@@ -27,11 +27,9 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = 'bsf-la-paz-v1';
+const COLLECTION_PATH = 'reports_v3'; // Ruta única para no mezclar datos
 
-// --- RUTA DE COLECCIÓN ---
-const COLLECTION_PATH = 'reports_v3';
-
-// --- Constantes del Sistema ---
+// --- Constantes ---
 const AREAS = {
   FINANCIERA: "Área Financiera y Bancaria",
   VIP: "Área Seguridad VIP",
@@ -87,31 +85,28 @@ const EXCEPCIONES_AREA = {
 
 const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE LA SOCIEDAD.";
 
-// --- Utilidades ---
-const obtenerFechaString = () => {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+// --- Utilidades de Fecha (SOLUCIÓN DEL PROBLEMA) ---
+// Usamos la fecha del dispositivo local para TODO.
+const obtenerFechaLocal = (dateObj = new Date()) => {
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
 
+const formatearHoraSimple = (fecha) => {
+  return fecha.getHours().toString().padStart(2, '0') + ':' + fecha.getMinutes().toString().padStart(2, '0');
+};
+
 const obtenerHoraLegible = (timestamp, horaReferencia) => {
+  // Prioridad a la hora guardada manualmente (referencia) para evitar saltos de zona horaria
+  if (horaReferencia && horaReferencia.includes(':')) return horaReferencia;
   if (timestamp) {
     return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
       hour: '2-digit', minute: '2-digit', hour12: false
     });
   }
-  if (horaReferencia) {
-    if (horaReferencia.length <= 5) return horaReferencia;
-    const partes = horaReferencia.split(' ');
-    return partes.length > 1 ? partes[1] : horaReferencia;
-  }
   return "...";
-};
-
-const formatearHoraSimple = (fecha) => {
-  return fecha.getHours().toString().padStart(2, '0') + ':' + fecha.getMinutes().toString().padStart(2, '0');
 };
 
 const esHorarioPermitido = (tipo) => {
@@ -127,24 +122,6 @@ const esHorarioPermitido = (tipo) => {
     return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
   }
   return { permitido: true };
-};
-
-const verificarAuditoria = (reporte) => {
-    if (!reporte.timestamp || !reporte.tipo) return null;
-    const date = new Date(reporte.timestamp.seconds * 1000);
-    const h = date.getHours();
-    const m = date.getMinutes();
-    const tiempoReal = h * 60 + m;
-    const LIMITE_APERTURA = 560; 
-    const LIMITE_CIERRE = 980;   
-
-    if (reporte.tipo === 'apertura' && tiempoReal > LIMITE_APERTURA) {
-        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
-    }
-    if (reporte.tipo === 'cierre' && tiempoReal > LIMITE_CIERRE) {
-        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
-    }
-    return null;
 };
 
 const procesarImagenSegura = (file) => {
@@ -177,23 +154,16 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('login'); 
   const [loading, setLoading] = useState(true);
-  const [dbStatus, setDbStatus] = useState('Conectando...');
 
   useEffect(() => {
     const initAuth = async () => {
-      try {
-        await signInAnonymously(auth);
-      } catch (error) { 
-        console.error("Auth:", error); 
-        setDbStatus('Error de Autenticación');
-        setLoading(false);
-      }
+      try { await signInAnonymously(auth); } 
+      catch (error) { console.error("Auth:", error); setLoading(false); }
     };
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
       setLoading(false); 
-      if(u) setDbStatus('Conectado');
     });
     return () => unsubscribe();
   }, []);
@@ -229,10 +199,6 @@ export default function App() {
         {view === 'form' && user && <ReportForm user={user} />}
         {view === 'dashboard' && user && <SupervisorDashboard user={user} />}
       </main>
-
-      <div className="fixed bottom-0 w-full bg-slate-800 text-slate-400 text-[10px] p-1 text-center border-t border-slate-700 z-50">
-         Estado: {dbStatus}
-      </div>
     </div>
   );
 }
@@ -244,7 +210,6 @@ function LoginScreen({ setView }) {
         <Shield size={60} className="text-blue-900 mx-auto mb-4" />
         <h2 className="text-2xl font-black text-slate-900 uppercase">Bienvenido</h2>
         <div className="h-1 w-20 bg-yellow-500 mx-auto my-2"></div>
-        <p className="text-sm text-slate-500 mb-6">Seleccione su perfil para ingresar</p>
         
         <div className="space-y-4">
           <button onClick={() => setView('form')} className="w-full p-4 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-xl flex items-center gap-4 transition-all group border border-blue-100">
@@ -272,7 +237,7 @@ function ReportForm({ user }) {
   const [nombre, setNombre] = useState(localStorage.getItem('bsf_nombre') || '');
   const [foto, setFoto] = useState(null); 
   const [enviando, setEnviando] = useState(false);
-  const [misReportes, setMisReportes] = useState([]); // Memoria local de lo enviado hoy
+  const [misReportes, setMisReportes] = useState([]); 
   const [horaActual, setHoraActual] = useState(new Date());
   
   const [estadoHorario, setEstadoHorario] = useState({ permitido: true });
@@ -299,29 +264,30 @@ function ReportForm({ user }) {
   }, [area]);
 
   useEffect(() => {
-    if (jefatura && ASIGNACIONES[area][jefatura]) setEntidad(ASIGNACIONES[area][jefatura][0]);
-  }, [jefatura, area]);
+    const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
+    if (entidadesJefatura.length > 0) {
+       let primeraPendiente = entidadesJefatura[0];
+       if (tipo !== 'extraordinario' && misReportes.length > 0) {
+           const pendiente = entidadesJefatura.find(e => !misReportes.some(r => r.entidad === e && r.tipo === tipo));
+           if (pendiente) primeraPendiente = pendiente;
+       }
+       setEntidad(primeraPendiente);
+    }
+  }, [jefatura, area, tipo, misReportes]);
 
-  // CARGA DE DATOS SIN FILTROS COMPLEJOS PARA EVITAR ERRORES DE INDICE
+  // LEER DATOS CON FILTRO LOCAL (SOLUCIÓN PERSISTENCIA)
   useEffect(() => {
-    const q = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH); 
+    // Traemos TODA la colección y filtramos en el celular para evitar errores de fecha/zona horaria
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), orderBy('timestamp', 'desc'));
     const unsubscribe = onSnapshot(q, (snap) => {
-      const hoyString = obtenerFechaString();
+      const hoyString = obtenerFechaLocal(); // Fecha del celular: "2024-05-22"
       const todos = snap.docs.map(d => d.data());
-      // Filtramos en memoria del celular (más seguro y rápido)
+      // Filtramos aquí: solo lo que tenga la fecha de hoy (texto exacto)
       const misDelDia = todos.filter(d => d.fecha_string === hoyString && d.jefatura === jefatura);
       setMisReportes(misDelDia);
     });
     return () => unsubscribe();
   }, [jefatura]);
-
-  // Selección automática de pendiente
-  useEffect(() => {
-    if (tipo === 'extraordinario') return;
-    const lista = ASIGNACIONES[area][jefatura] || [];
-    const pendiente = lista.find(e => !misReportes.some(r => r.entidad === e && r.tipo === tipo));
-    if (pendiente) setEntidad(pendiente);
-  }, [misReportes, tipo, jefatura, area]);
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
@@ -334,13 +300,15 @@ function ReportForm({ user }) {
 
   const enviarParte = async () => {
     if (!navigator.onLine) { alert("Sin internet."); return; }
-    if (!grado || !nombre || !foto) { alert("Faltan datos obligatorios (Grado, Nombre, Foto)."); return; }
-    if (yaReportado) { alert("Esta entidad ya tiene reporte hoy."); return; }
+    if (!grado || !nombre || !foto) { alert("Faltan datos obligatorios."); return; }
+    
+    // BLOQUEO DE DUPLICADOS REAL (Ya validado con la lista local)
+    if (yaReportado) { alert("Ya registrado hoy."); return; }
 
     setEnviando(true);
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
     const horaRef = formatearHoraSimple(new Date()); 
-    const fechaString = obtenerFechaString();
+    const fechaString = obtenerFechaLocal(); // Guardamos "2024-05-22" fijo
 
     const docData = {
         area: areaFinal, 
@@ -352,25 +320,23 @@ function ReportForm({ user }) {
         grado, 
         nombre,
         horaReferencia: horaRef,
-        fecha_string: fechaString, // CLAVE MAESTRA DE FECHA
+        fecha_string: fechaString, // ESTA ES LA CLAVE DE LA PERSISTENCIA
         timestamp: serverTimestamp(),
         userId: user.uid
     };
 
     const dbPromise = addDoc(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), docData);
-
-    // TIEMPO DE ESPERA REDUCIDO PARA MAYOR FLUIDEZ (1.5s)
     const timeoutPromise = new Promise(resolve => setTimeout(resolve, 1500)); 
 
     try {
       await Promise.race([dbPromise, timeoutPromise]);
       setEnviando(false);
-      alert("REPORTE REGISTRADO CORRECTAMENTE.");
+      alert("REPORTE REGISTRADO.");
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
     } catch (e) {
       console.error(e);
-      alert("Error al guardar. Intente nuevamente.");
+      alert("Error al guardar.");
       setEnviando(false);
     }
   };
@@ -384,7 +350,7 @@ function ReportForm({ user }) {
       <div className="bg-white p-5 rounded-2xl shadow-lg border-t-4 border-blue-900">
          {!estadoHorario.permitido && (
             <div className="bg-amber-50 text-amber-800 p-3 rounded mb-4 text-xs flex items-center gap-2 border border-amber-200">
-               <AlertCircle size={16}/> <span><b>AVISO:</b> Está reportando fuera de horario ({estadoHorario.mensaje}).</span>
+               <AlertCircle size={16}/> <span><b>AVISO:</b> Fuera de horario ({estadoHorario.mensaje}).</span>
             </div>
          )}
          
@@ -442,13 +408,12 @@ function ReportForm({ user }) {
 
 function SupervisorDashboard({ user }) {
   const [reportes, setReportes] = useState([]);
-  const [fecha, setFecha] = useState(obtenerFechaString());
+  const [fecha, setFecha] = useState(obtenerFechaLocal());
   const [filtro, setFiltro] = useState('todos');
   const [verTodoHistorial, setVerTodoHistorial] = useState(false);
   const [modalFoto, setModalFoto] = useState(null);
 
   useEffect(() => {
-    // Escuchar TODA la colección. Es la única forma de garantizar que no haya errores de índice.
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), orderBy('timestamp', 'desc'));
     const unsubscribe = onSnapshot(q, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
@@ -457,7 +422,7 @@ function SupervisorDashboard({ user }) {
     return () => unsubscribe();
   }, []);
 
-  // Filtros en Memoria (Infalible)
+  // FILTRO SEGURO EN MEMORIA
   const reportesVisibles = reportes.filter(r => {
      if (!verTodoHistorial && r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
@@ -470,26 +435,41 @@ function SupervisorDashboard({ user }) {
   };
 
   const generarResumen = () => {
-    let t = `*REPORTE BSF - ${fecha}*\n\n`;
+    let titulo = "PARTE GENERAL";
+    if (filtro === 'apertura') titulo = "REPORTE DE APERTURA DE ENTIDADES";
+    else if (filtro === 'cierre') titulo = "REPORTE DE CIERRE DE ENTIDADES";
+    else if (filtro === 'extraordinario') titulo = "REPORTES EXTRAORDINARIOS";
+
+    let t = `*${titulo} - ${fecha}*\n\n`;
     [AREAS.FINANCIERA, AREAS.VIP, AREAS.INSTALACIONES, AREAS.ETV].forEach(areaName => {
         const reportesArea = reportesVisibles.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === areaName);
-        if(reportesArea.length === 0 && filtro !== 'todos') return; // Ocultar vacíos si hay filtro
+        if(reportesArea.length === 0 && filtro !== 'todos') return;
         
         t += `*${areaName}*\n`;
-        if(reportesArea.length === 0) t += "Sin novedades registradas.\n";
-        else {
-           reportesArea.forEach(r => {
-              if (r.novedad !== 'SIN NOVEDAD') t += `⚠ ${r.novedad} (${r.entidad})\n`;
-              else t += `✓ Sin novedad (${r.entidad})\n`;
-           });
+        if(reportesArea.length === 0) {
+            if (filtro === 'todos') t += "(Pendiente de reportes)\n";
+            else t += "Sin novedades.\n";
+        } else {
+           const conNovedad = reportesArea.filter(r => r.novedad?.toUpperCase() !== 'SIN NOVEDAD' && r.novedad !== 'S/N');
+           if (conNovedad.length === 0) t += "Sin novedad.\n";
+           else {
+               conNovedad.forEach(r => {
+                  const hora = obtenerHoraLegible(r.timestamp, r.horaReferencia);
+                  const resp = r.grado ? ` - Resp: ${r.grado} ${r.nombre.split(' ')[0]}` : '';
+                  t += `Con novedad (${hora}): ${r.novedad} (${r.entidad}${resp})\n`;
+               });
+           }
         }
         t += "\n";
     });
-    t += `"${LEMA}"`;
+    t += `*TOTAL REPORTES RECIBIDOS:* ${reportesVisibles.length}\n"${LEMA}"`;
     copiar(t);
   };
 
-  const faltantes = Object.values(ASIGNACIONES).reduce((acc, curr) => acc + Object.values(curr).flat().length, 0) - reportesVisibles.length;
+  // Cálculo de faltantes usando jefaturas (20 oficiales)
+  const jefaturasTotales = new Set(Object.values(ASIGNACIONES).flatMap(area => Object.keys(area)));
+  const jefaturasReportadas = new Set(reportesVisibles.map(r => r.jefatura));
+  const oficialesFaltantes = [...jefaturasTotales].filter(j => !jefaturasReportadas.has(j));
 
   return (
     <div className="space-y-4 animate-in fade-in">
@@ -512,6 +492,13 @@ function SupervisorDashboard({ user }) {
          </div>
          <p className="text-[10px] text-right mt-2 text-slate-400">Total visibles: {reportesVisibles.length}</p>
       </div>
+      
+      {(filtro === 'apertura' || filtro === 'cierre') && (
+        <div className={`p-4 rounded-xl shadow border-l-4 ${oficialesFaltantes.length > 0 ? 'bg-red-50 border-red-500 text-red-800' : 'bg-green-50 border-green-500 text-green-800'}`}>
+            <p className="font-bold text-xs uppercase">Faltan {oficialesFaltantes.length} de {jefaturasTotales.size} Oficiales</p>
+            {oficialesFaltantes.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{oficialesFaltantes.map(j => <span key={j} className="text-[9px] bg-white border px-1 rounded">{j}</span>)}</div>}
+        </div>
+      )}
 
       <div className="space-y-3">
          {reportesVisibles.map(r => (
