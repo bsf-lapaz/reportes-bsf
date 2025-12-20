@@ -1,17 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { 
-  getFirestore, collection, addDoc, onSnapshot, serverTimestamp 
+  getFirestore, collection, addDoc, query, orderBy, 
+  onSnapshot, serverTimestamp, where 
 } from 'firebase/firestore';
 import { 
   Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
   UserCheck, ClipboardList, AlertTriangle, Camera, 
   Image as ImageIcon, X, RefreshCw, Zap, User, Filter, Share2, 
-  CheckSquare, AlertCircle, WifiOff, Database, Lock 
+  CheckSquare, AlertCircle, WifiOff, Calendar, Database, Lock 
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE ---
+// --- CONFIGURACIÓN DE FIREBASE (TUS DATOS REALES) ---
 const firebaseConfig = {
   apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
   authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
@@ -25,10 +26,12 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-// RUTA FIJA Y SIMPLE PARA EVITAR ERRORES
-const COLLECTION_PATH = 'reportes_blindados_v1'; 
+const appId = 'bsf-la-paz-v1';
 
-// --- Constantes ---
+// --- RUTA DE COLECCIÓN ---
+const COLLECTION_PATH = 'reports_v3';
+
+// --- Constantes del Sistema ---
 const AREAS = {
   FINANCIERA: "Área Financiera y Bancaria",
   VIP: "Área Seguridad VIP",
@@ -93,6 +96,20 @@ const obtenerFechaString = () => {
   return `${year}-${month}-${day}`;
 };
 
+const obtenerHoraLegible = (timestamp, horaReferencia) => {
+  if (timestamp) {
+    return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
+      hour: '2-digit', minute: '2-digit', hour12: false
+    });
+  }
+  if (horaReferencia) {
+    if (horaReferencia.length <= 5) return horaReferencia;
+    const partes = horaReferencia.split(' ');
+    return partes.length > 1 ? partes[1] : horaReferencia;
+  }
+  return "...";
+};
+
 const formatearHoraSimple = (fecha) => {
   return fecha.getHours().toString().padStart(2, '0') + ':' + fecha.getMinutes().toString().padStart(2, '0');
 };
@@ -110,6 +127,24 @@ const esHorarioPermitido = (tipo) => {
     return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
   }
   return { permitido: true };
+};
+
+const verificarAuditoria = (reporte) => {
+    if (!reporte.timestamp || !reporte.tipo) return null;
+    const date = new Date(reporte.timestamp.seconds * 1000);
+    const h = date.getHours();
+    const m = date.getMinutes();
+    const tiempoReal = h * 60 + m;
+    const LIMITE_APERTURA = 560; 
+    const LIMITE_CIERRE = 980;   
+
+    if (reporte.tipo === 'apertura' && tiempoReal > LIMITE_APERTURA) {
+        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
+    }
+    if (reporte.tipo === 'cierre' && tiempoReal > LIMITE_CIERRE) {
+        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
+    }
+    return null;
 };
 
 const procesarImagenSegura = (file) => {
@@ -269,7 +304,7 @@ function ReportForm({ user }) {
 
   // CARGA DE DATOS SIN FILTROS COMPLEJOS PARA EVITAR ERRORES DE INDICE
   useEffect(() => {
-    const q = collection(db, COLLECTION_PATH); // Consulta plana a toda la colección
+    const q = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH); 
     const unsubscribe = onSnapshot(q, (snap) => {
       const hoyString = obtenerFechaString();
       const todos = snap.docs.map(d => d.data());
@@ -307,25 +342,37 @@ function ReportForm({ user }) {
     const horaRef = formatearHoraSimple(new Date()); 
     const fechaString = obtenerFechaString();
 
-    // Guardamos con ID único generado por nosotros para evitar duplicados reales
     const docData = {
-        area: areaFinal, jefatura, entidad, tipo, novedad, foto, grado, nombre,
+        area: areaFinal, 
+        jefatura, 
+        entidad, 
+        tipo, 
+        novedad, 
+        foto, 
+        grado, 
+        nombre,
         horaReferencia: horaRef,
         fecha_string: fechaString, // CLAVE MAESTRA DE FECHA
         timestamp: serverTimestamp(),
         userId: user.uid
     };
 
+    const dbPromise = addDoc(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), docData);
+
+    // TIEMPO DE ESPERA REDUCIDO PARA MAYOR FLUIDEZ (1.5s)
+    const timeoutPromise = new Promise(resolve => setTimeout(resolve, 1500)); 
+
     try {
-      await addDoc(collection(db, COLLECTION_PATH), docData);
-      alert("REPORTE GUARDADO EXITOSAMENTE.");
+      await Promise.race([dbPromise, timeoutPromise]);
+      setEnviando(false);
+      alert("REPORTE REGISTRADO CORRECTAMENTE.");
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
     } catch (e) {
       console.error(e);
       alert("Error al guardar. Intente nuevamente.");
+      setEnviando(false);
     }
-    setEnviando(false);
   };
 
   const listaEntidades = ASIGNACIONES[area][jefatura] || [];
@@ -365,7 +412,7 @@ function ReportForm({ user }) {
                 <select className="w-full p-2 bg-white border rounded text-xs" value={entidad} onChange={e=>setEntidad(e.target.value)}>
                    {listaEntidades.map(e => {
                       const listo = misReportes.some(r => r.entidad === e && r.tipo === tipo);
-                      return <option key={e} value={e}>{listo ? '✅' : '⬜'} {e}</option>
+                      return <option key={e} value={e}>{listo ? '✅' : '⬜'} {e} {listo ? '(LISTO)' : ''}</option>
                    })}
                 </select>
              </div>
@@ -402,8 +449,7 @@ function SupervisorDashboard({ user }) {
 
   useEffect(() => {
     // Escuchar TODA la colección. Es la única forma de garantizar que no haya errores de índice.
-    // Como el volumen es bajo (1GB gratis), podemos filtrar en cliente sin problema.
-    const q = query(collection(db, COLLECTION_PATH), orderBy('timestamp', 'desc'));
+    const q = query(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_PATH), orderBy('timestamp', 'desc'));
     const unsubscribe = onSnapshot(q, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
       setReportes(docs);
@@ -430,7 +476,6 @@ function SupervisorDashboard({ user }) {
         if(reportesArea.length === 0 && filtro !== 'todos') return; // Ocultar vacíos si hay filtro
         
         t += `*${areaName}*\n`;
-        // Aquí iría la lógica detallada de agrupar... (simplificada para el ejemplo)
         if(reportesArea.length === 0) t += "Sin novedades registradas.\n";
         else {
            reportesArea.forEach(r => {
