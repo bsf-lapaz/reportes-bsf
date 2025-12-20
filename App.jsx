@@ -9,7 +9,7 @@ import {
   Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
   UserCheck, ClipboardList, AlertTriangle, Camera, 
   Image as ImageIcon, X, RefreshCw, Zap, User, Filter, Share2, 
-  CheckSquare, AlertCircle, WifiOff, Calendar, Database 
+  CheckSquare, AlertCircle, WifiOff, Calendar, Database, Lock 
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE (TUS DATOS REALES) ---
@@ -85,7 +85,6 @@ const EXCEPCIONES_AREA = {
 const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE LA SOCIEDAD.";
 
 // --- Utilidades ---
-// Obtiene la fecha local del dispositivo en formato YYYY-MM-DD (Evita errores UTC)
 const obtenerFechaLocal = (dateObj = new Date()) => {
   const year = dateObj.getFullYear();
   const month = String(dateObj.getMonth() + 1).padStart(2, '0');
@@ -135,6 +134,28 @@ const esHorarioPermitido = (tipo) => {
     return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
   }
   return { permitido: true };
+};
+
+// --- Auditoría de Horario (Detector de "Picardía") ---
+const verificarAuditoria = (reporte) => {
+    if (!reporte.timestamp || !reporte.tipo) return null;
+    const date = new Date(reporte.timestamp.seconds * 1000);
+    const h = date.getHours();
+    const m = date.getMinutes();
+    const tiempoReal = h * 60 + m;
+
+    // Límites estrictos (Server Time)
+    const LIMITE_APERTURA = 560; // 09:20
+    const LIMITE_CIERRE = 980;   // 16:20
+
+    if (reporte.tipo === 'apertura' && tiempoReal > LIMITE_APERTURA) {
+        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
+    }
+    if (reporte.tipo === 'cierre' && tiempoReal > LIMITE_CIERRE) {
+         // Cierre es especial, si es muy tarde es extemporáneo
+        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
+    }
+    return null;
 };
 
 const procesarImagenSegura = (file) => {
@@ -357,7 +378,6 @@ function ReportForm({ user, setView }) {
     if (!user || !jefatura) return;
     const q = query(collection(db, 'artifacts', appId, 'public', 'data', 'reports_v3'), where('jefatura', '==', jefatura));
     const unsubscribe = onSnapshot(q, (snap) => {
-      // Usar fecha LOCAL para el filtro del checklist del oficial
       const hoy = obtenerFechaLocal();
       const docs = snap.docs.map(d => d.data()).filter(d => {
         const fechaDoc = d.timestamp ? obtenerFechaLocal(new Date(d.timestamp.seconds * 1000)) : hoy; 
@@ -383,6 +403,13 @@ function ReportForm({ user, setView }) {
     if (!navigator.onLine) { alert("ERROR DE RED: Sin internet."); return; }
     if (!grado || !nombre || !foto) { alert("ATENCIÓN: Faltan datos."); return; }
     
+    // VERIFICACIÓN DE DUPLICADO
+    const yaReportado = reportesHoyDetalle.some(r => r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
+    if (yaReportado) {
+        alert(`YA REPORTADO: Esta entidad ya tiene su registro de ${tipo} de hoy.`);
+        return;
+    }
+
     setEnviando(true);
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
     const horaRef = formatearHoraSimple(new Date()); 
@@ -468,7 +495,6 @@ function ReportForm({ user, setView }) {
                 </select>
                 <div className="absolute right-3 top-3 pointer-events-none text-slate-400">▼</div>
             </div>
-            
             {EXCEPCIONES_AREA[entidad] && <p className="text-[9px] text-blue-600 mt-1 font-bold">* Se registrará en: {EXCEPCIONES_AREA[entidad]}</p>}
           </div>
 
@@ -542,7 +568,7 @@ function ReportForm({ user, setView }) {
 
 function SupervisorDashboard({ user }) {
   const [reportes, setReportes] = useState([]);
-  const [fecha, setFecha] = useState(obtenerFechaLocal()); // INICIO CON FECHA LOCAL
+  const [fecha, setFecha] = useState(obtenerFechaLocal());
   const [modalFoto, setModalFoto] = useState(null);
   const [filtroTipo, setFiltroTipo] = useState('todos');
   const [verTodosHistorial, setVerTodosHistorial] = useState(false); 
@@ -556,10 +582,9 @@ function SupervisorDashboard({ user }) {
         .map(d => ({id: d.id, ...d.data()}))
         .filter(d => {
           if (verTodosHistorial) return true; 
-          // Corrección: Convertir timestamp a Date, luego a string LOCAL (YYYY-MM-DD) y comparar
           const fechaTimestamp = d.timestamp ? new Date(d.timestamp.seconds * 1000) : new Date();
           const fechaLocalDoc = obtenerFechaLocal(fechaTimestamp);
-          return fechaLocalDoc === fecha; // Comparación estricta de fecha local
+          return fechaLocalDoc === fecha; 
         })
         .sort((a, b) => {
           const tA = a.timestamp?.seconds || Number.MAX_SAFE_INTEGER;
@@ -625,6 +650,7 @@ function SupervisorDashboard({ user }) {
               if (EXCEPCIONES_AREA[entidad] && EXCEPCIONES_AREA[entidad] !== areaName) return;
               
               const reporte = reportesDelDia.find(r => r.entidad === entidad);
+              
               if (reporte) {
                   areaTieneContenido = true;
                   const esSinNovedad = !reporte.novedad || reporte.novedad.toUpperCase().includes("SIN NOVEDAD") || reporte.novedad.toUpperCase() === "S/N";
@@ -754,6 +780,13 @@ function SupervisorDashboard({ user }) {
                 <span className="text-[10px] font-mono text-slate-500 font-bold flex items-center gap-1">
                   <Clock size={10} />
                   {obtenerHoraLegible(r.timestamp, r.horaReferencia)}
+                  {/* AUDITORÍA: Si la hora del servidor y la local difieren, mostrar alerta */}
+                  {verificarAuditoria(r) && (
+                      <span className="ml-2 bg-red-100 text-red-700 px-1 rounded text-[8px] border border-red-200 flex items-center">
+                          <AlertTriangle size={8} className="mr-0.5"/>
+                          REAL: {verificarAuditoria(r).horaReal}
+                      </span>
+                  )}
                 </span>
               </div>
               <h4 className="font-black text-xs text-slate-900 truncate uppercase mt-1">{r.entidad}</h4>
