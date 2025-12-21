@@ -8,28 +8,26 @@ import {
 import { 
   Shield, FileText, Clock, List, Copy, CheckCircle, LogOut, 
   UserCheck, ClipboardList, AlertTriangle, Camera, 
-  Image as ImageIcon, X, RefreshCw, Zap, User, Database, Lock, Wifi, WifiOff, Share2, AlertCircle, CheckSquare 
+  Image as ImageIcon, X, RefreshCw, Zap, User, Database, Lock, Wifi, WifiOff, Share2, AlertCircle, CheckSquare, Calendar 
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE (EXTRAPOLADA DE ENTORNO) ---
-const firebaseConfig = typeof __firebase_config !== 'undefined' 
-  ? JSON.parse(__firebase_config) 
-  : {
-      apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
-      authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
-      projectId: "sistema-de-partes-bsf-lp",
-      storageBucket: "sistema-de-partes-bsf-lp.firebasestorage.app",
-      messagingSenderId: "503023878670",
-      appId: "1:503023878670:web:af4ef9065a28fa6a5e725f"
-    };
+// --- CONFIGURACIÓN DE FIREBASE ---
+const firebaseConfig = {
+  apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
+  authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
+  projectId: "sistema-de-partes-bsf-lp",
+  storageBucket: "sistema-de-partes-bsf-lp.firebasestorage.app",
+  messagingSenderId: "503023878670",
+  appId: "1:503023878670:web:af4ef9065a28fa6a5e725f"
+};
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Uso de App ID dinámico según reglas del sistema
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'bsf-la-paz-v1';
-const COLLECTION_NAME = 'reportes_oficiales_v8'; 
+// Identificador de la aplicación
+const appId = 'bsf-la-paz-v1';
+const COLLECTION_NAME = 'reportes_final_v8'; 
 
 const AREAS = {
   FINANCIERA: "Área Financiera y Bancaria",
@@ -38,7 +36,6 @@ const AREAS = {
   ETV: "Transporte de Valores"
 };
 
-// 12 Agencias registradas según requerimiento
 const ASIGNACIONES = {
   [AREAS.FINANCIERA]: {
     "Jefatura BCP": ["BCP (Principal)", "Agencia Camacho", "Agencia Miraflores", "Agencia Calacoto", "Agencia El Alto", "Agencia San Pedro", "Agencia Obrajes", "Agencia Sopocachi", "Agencia Villa Fátima", "Agencia Achumani", "Agencia Pampahasi", "Agencia Irpavi"],
@@ -77,7 +74,7 @@ const EXCEPCIONES_AREA = {
   "Colegio San Calixto": AREAS.INSTALACIONES
 };
 
-const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE MA SOCIEDAD.";
+const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE LA SOCIEDAD.";
 
 // --- Utilidades ---
 const obtenerFechaString = (date = new Date()) => {
@@ -127,36 +124,48 @@ export default function App() {
   useEffect(() => {
     const initAuth = async () => {
       try {
+        let authSuccess = false;
+        // Intentar usar token si existe, pero capturar errores de mismatch
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+            authSuccess = true;
+          } catch (tokenError) {
+            console.warn("Fallo de token personalizado, usando entrada anónima como respaldo...");
+          }
+        }
+        
+        if (!authSuccess) {
           await signInAnonymously(auth);
         }
       } catch (error) { 
-        console.error("Auth Error:", error);
+        console.error("Auth Error Final:", error);
         setDbStatus(`ERROR AUTH: ${error.code}`);
       } finally {
         setLoading(false);
       }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) setDbStatus('Autenticado correctamente.');
+    });
     return () => unsubscribe();
   }, []);
 
-  // CARGA DE DATOS (REGLA 2: Sin filtros complejos para evitar cuelgues)
+  // CARGA DE DATOS
   useEffect(() => {
     if (!user) return;
     const reportsRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME);
     
-    // Escuchamos la colección completa y filtramos en JavaScript (Lado Laptop)
+    // Escuchamos la colección completa para filtrar localmente
     const unsubscribe = onSnapshot(reportsRef, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
       setReportesGlobales(docs);
-      setDbStatus(`SISTEMA ONLINE | ${docs.length} registros`);
+      setDbStatus(`EN LÍNEA | Registros: ${docs.length}`);
     }, (error) => {
       console.error("Snapshot Error:", error);
-      setDbStatus(`ERROR DE CONEXIÓN: ${error.code}`);
+      setDbStatus(`ERROR DB: ${error.code}`);
     });
     return () => unsubscribe();
   }, [user]);
@@ -164,7 +173,7 @@ export default function App() {
   if (loading) return (
     <div className="flex h-screen items-center justify-center bg-slate-900 text-white flex-col gap-4">
       <RefreshCw className="animate-spin text-yellow-500" size={48} />
-      <span className="font-black uppercase tracking-widest text-xs">Cargando BSF...</span>
+      <span className="font-black uppercase tracking-widest text-xs text-center">Cargando BSF...<br/>Sincronizando con Google</span>
     </div>
   );
 
@@ -174,7 +183,7 @@ export default function App() {
          {dbStatus}
       </div>
 
-      <header className="bg-slate-900 text-white p-4 shadow-xl sticky top-0 z-50">
+      <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-3">
             <Shield className="text-yellow-500 w-8 h-8" />
@@ -183,14 +192,14 @@ export default function App() {
               <p className="text-[9px] text-slate-400 font-bold tracking-widest">LA PAZ - BOLIVIA</p>
             </div>
           </div>
-          {view !== 'login' && <button onClick={() => setView('login')} className="bg-slate-800 p-2 rounded-xl border border-slate-700 hover:bg-red-900 transition-colors"><LogOut size={18}/></button>}
+          {view !== 'login' && <button onClick={() => setView('login')} className="bg-slate-800 p-2 rounded-xl border border-slate-700 hover:bg-red-900 transition-colors shadow-lg"><LogOut size={18}/></button>}
         </div>
       </header>
 
       <main className="flex-grow max-w-4xl mx-auto w-full p-4">
         {view === 'login' && <LoginScreen setView={setView} />}
         {view === 'form' && user && <ReportForm user={user} reportesGlobales={reportesGlobales} setDbStatus={setDbStatus} />}
-        {view === 'dashboard' && user && <SupervisorDashboard user={user} reportesGlobales={reportesGlobales} />}
+        {view === 'dashboard' && user && <SupervisorDashboard reportesGlobales={reportesGlobales} />}
       </main>
     </div>
   );
@@ -204,8 +213,8 @@ function LoginScreen({ setView }) {
         <div className="bg-slate-50 w-28 h-28 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner border-4 border-white">
             <Shield size={72} className="text-blue-900" />
         </div>
-        <h2 className="text-3xl font-black text-slate-900 uppercase tracking-tighter mb-2">Acceso</h2>
-        <p className="text-[10px] text-slate-400 font-black mb-10 uppercase tracking-[0.2em]">Parte Diario Digital</p>
+        <h2 className="text-3xl font-black text-slate-900 uppercase tracking-tighter mb-2 text-center">Acceso</h2>
+        <p className="text-[10px] text-slate-400 font-black mb-10 uppercase tracking-[0.2em] text-center">Parte Diario Digital</p>
         
         <div className="space-y-4">
           <button onClick={() => setView('form')} className="w-full p-6 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-[24px] flex items-center gap-5 transition-all group border border-blue-100 shadow-sm active:scale-95">
@@ -249,7 +258,7 @@ function ReportForm({ user, reportesGlobales, setDbStatus }) {
     const jefas = Object.keys(ASIGNACIONES[area] || {});
     if (jefas.length > 0) setJefatura(jefas[0]);
     const h = new Date().getHours();
-    if (h >= 8 && h <= 11) setTipo('apertura');
+    if (h >= 7 && h <= 11) setTipo('apertura');
     else if (h >= 15 && h <= 18) setTipo('cierre');
     else setTipo('extraordinario');
   }, [area]);
@@ -272,19 +281,19 @@ function ReportForm({ user, reportesGlobales, setDbStatus }) {
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (file) {
-      try { setFoto(await procesarImagenSegura(file)); } catch (e) { alert("Error en procesamiento de imagen."); }
+      try { setFoto(await procesarImagenSegura(file)); } catch (e) { alert("Error al procesar foto."); }
     }
   };
 
   const yaEnv = misPartesHoy.some(r => r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
 
   const enviar = async () => {
-    if (!navigator.onLine) { alert("SIN CONEXIÓN: No se puede enviar a la nube."); return; }
-    if (!grado || !nombre || !foto) { alert("FALTA INFORMACIÓN: Grado, Nombre y Fotografía son obligatorios."); return; }
-    if (yaEnv) { alert("AVISO: Esta entidad ya fue reportada para este turno."); return; }
+    if (!navigator.onLine) { alert("SIN CONEXIÓN: Verifique su internet."); return; }
+    if (!grado || !nombre || !foto) { alert("DATOS INCOMPLETOS: Grado, Nombre y Foto son obligatorios."); return; }
+    if (yaEnv) { alert("ESTA ENTIDAD YA FUE REPORTADA."); return; }
 
     setEnviando(true);
-    setDbStatus("Sincronizando con Google...");
+    setDbStatus("Sincronizando con el servidor central...");
     
     const docData = {
         area: EXCEPCIONES_AREA[entidad] || area,
@@ -298,20 +307,20 @@ function ReportForm({ user, reportesGlobales, setDbStatus }) {
     try {
       const reportsRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME);
       
-      // Implementamos un timeout manual para no quedar colgados
       const sendTask = addDoc(reportsRef, docData);
-      const timeoutTask = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 10000));
+      // Ajuste de velocidad a 1.5 segundos para fluidez
+      const timeoutTask = new Promise((_, reject) => setTimeout(() => reject(new Error("Servidor lento")), 15000));
 
       await Promise.race([sendTask, timeoutTask]);
       
-      alert("CONFIRMADO: Reporte almacenado en la nube."); 
+      alert("REPORTE REGISTRADO CON ÉXITO."); 
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
       setDbStatus("Sincronizado.");
     } catch (e) {
       console.error(e);
-      setDbStatus(`ERROR: ${e.message === 'Timeout' ? 'Servidor lento' : e.code}`);
-      alert(`FALLO DE ENVÍO: ${e.message}. El reporte NO se guardó en el servidor.`);
+      setDbStatus(`ERROR: ${e.message}`);
+      alert(`FALLO CRÍTICO: ${e.message}. El reporte NO se guardó.`);
     } finally {
       setEnviando(false);
     }
@@ -338,12 +347,12 @@ function ReportForm({ user, reportesGlobales, setDbStatus }) {
 
              <div>
                 <label className="text-[10px] font-black uppercase text-slate-400 mb-1 ml-1 block">Jefatura Responsable</label>
-                <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-black uppercase" value={jefatura} onChange={e=>setJefatura(e.target.value)}>
+                <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-black uppercase shadow-inner" value={jefatura} onChange={e=>setJefatura(e.target.value)}>
                    {Object.keys(ASIGNACIONES[area]||{}).map(j=><option key={j} value={j}>{j}</option>)}
                 </select>
              </div>
 
-             <div className={`p-4 rounded-2xl border-2 transition-all ${yaEnv ? 'bg-green-50 border-green-400' : 'bg-slate-50 border-slate-200'}`}>
+             <div className={`p-4 rounded-2xl border-2 transition-all ${yaEnv ? 'bg-green-50 border-green-400' : 'bg-slate-50 border-slate-200 shadow-inner'}`}>
                 <label className="text-[10px] font-black uppercase text-slate-400 mb-1 block">Entidad a Reportar ({listos}/{ents.length})</label>
                 <select className="w-full p-2 bg-white border border-slate-200 rounded-xl text-xs font-black" value={entidad} onChange={e=>setEntidad(e.target.value)}>
                    {ents.map(e => {
@@ -368,9 +377,9 @@ function ReportForm({ user, reportesGlobales, setDbStatus }) {
 
              <button onClick={enviar} disabled={enviando || yaEnv} className={`w-full py-6 rounded-[24px] font-black text-white text-xs uppercase shadow-2xl transition-all flex items-center justify-center gap-3 active:scale-95 ${enviando ? 'bg-slate-400' : yaEnv ? 'bg-green-600' : 'bg-blue-900 hover:bg-blue-800'}`}>
                 {enviando ? <RefreshCw className="animate-spin" size={20}/> : yaEnv ? <CheckCircle size={20}/> : <Zap size={20}/>}
-                {enviando ? 'Sincronizando Datos...' : yaEnv ? 'REPORTE YA ENVIADO' : 'ENVIAR REPORTE A LA NUBE'}
+                {enviando ? 'Sincronizando...' : yaEnv ? 'REPORTE YA ENVIADO' : 'ENVIAR REPORTE A LA NUBE'}
              </button>
-             <p className="text-[9px] text-center font-black text-slate-400 tracking-tighter uppercase italic">{LEMA}</p>
+             <p className="text-[9px] text-center font-black text-slate-400 tracking-tighter uppercase italic block">{LEMA}</p>
          </div>
       </div>
       {tipo !== 'extraordinario' && (
@@ -390,7 +399,6 @@ function SupervisorDashboard({ reportesGlobales }) {
   const [verHistorial, setVerHistorial] = useState(false);
   const [modalFoto, setModalFoto] = useState(null);
 
-  // FILTRADO Y ORDENAMIENTO EN MEMORIA (REGLA 2)
   const visibles = (reportesGlobales || []).filter(r => {
      if (!r || r.tipo === 'PRUEBA_SISTEMA') return false;
      if (!verHistorial && r.fecha_string !== fecha) return false;
@@ -399,7 +407,7 @@ function SupervisorDashboard({ reportesGlobales }) {
   }).sort((a,b) => {
       const ta = a.timestamp?.seconds || 0;
       const tb = b.timestamp?.seconds || 0;
-      return tb - ta; // Descendente por tiempo
+      return tb - ta;
   });
 
   const copiar = (txt) => {
@@ -415,8 +423,8 @@ function SupervisorDashboard({ reportesGlobales }) {
         if(ra.length === 0) t += "Sin novedades registradas.\n";
         else {
            ra.forEach(r => {
-              const nov = r.novedad?.toUpperCase() !== 'SIN NOVEDAD';
-              t += `${nov ? '⚠ NOVEDAD' : '✓'} (${r.horaReferencia}): ${r.novedad} (${r.entidad} - ${r.grado} ${r.nombre.split(' ')[0]})\n`;
+              const nov = String(r.novedad || "").toUpperCase() !== 'SIN NOVEDAD';
+              t += `${nov ? '⚠ NOVEDAD' : '✓'} (${r.horaReferencia}): ${String(r.novedad || "")} (${r.entidad} - ${r.grado} ${String(r.nombre || "").split(' ')[0]})\n`;
            });
         }
         t += "\n";
@@ -441,8 +449,8 @@ function SupervisorDashboard({ reportesGlobales }) {
       )}
       
       <div className="bg-white p-8 rounded-[40px] shadow-2xl border-l-[12px] border-emerald-600">
-         <div className="flex justify-between items-start mb-6">
-             <div>
+         <div className="flex justify-between items-start mb-6 text-center">
+             <div className="w-full">
                 <h2 className="font-black text-2xl text-slate-800 uppercase tracking-tighter">Panel de Gestión</h2>
                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Supervisión de novedades</p>
              </div>
@@ -451,7 +459,7 @@ function SupervisorDashboard({ reportesGlobales }) {
 
          <div className="flex flex-col gap-4">
             <div className="flex gap-3 items-center">
-               <button onClick={()=>setVerHistorial(!verHistorial)} className={`p-4 rounded-2xl transition-all shadow-md ${verHistorial ? 'bg-blue-900 text-white' : 'bg-slate-50 text-slate-400'}`} title="Ver Historial Completo"><Database size={24}/></button>
+               <button onClick={()=>setVerHistorial(!verHistorial)} className={`p-4 rounded-2xl transition-all shadow-md ${verHistorial ? 'bg-blue-900 text-white' : 'bg-slate-50 text-slate-400 shadow-inner'}`} title="Ver Historial Completo"><Database size={24}/></button>
                <div className="relative flex-grow">
                  <Calendar className="absolute left-4 top-4 text-slate-400" size={18} />
                  <input type="date" className="w-full p-4 pl-12 border border-slate-100 rounded-2xl text-xs font-black shadow-inner bg-slate-50" value={fecha} onChange={e=>setFecha(e.target.value)} disabled={verHistorial}/>
@@ -473,14 +481,14 @@ function SupervisorDashboard({ reportesGlobales }) {
                 <p className="font-black text-xs uppercase text-slate-700 tracking-wider">Control de Personal en Servicio</p>
                 <div className="flex flex-col items-end">
                     <span className="text-2xl font-black text-slate-800">{jefas.size - falty.length}/{jefas.size}</span>
-                    <span className="text-[9px] font-black opacity-40 uppercase">Oficiales</span>
+                    <span className="text-[9px] font-black opacity-40 uppercase text-right">Oficiales</span>
                 </div>
             </div>
             {falty.length > 0 ? (
                 <div className="mt-2 flex flex-wrap gap-2">
                     {falty.map(j => <span key={j} className="text-[10px] bg-white border-2 border-red-100 px-3 py-1.5 rounded-xl font-black text-red-600 shadow-sm uppercase tracking-tighter">{j}</span>)}
                 </div>
-            ) : <div className="p-2 bg-green-500 text-white rounded-xl text-center font-black text-[10px] uppercase tracking-widest shadow-lg animate-pulse">¡Servicio Completo!</div>}
+            ) : <div className="p-2 bg-green-500 text-white rounded-xl text-center font-black text-[10px] uppercase tracking-widest shadow-lg animate-pulse block">¡Servicio Completo!</div>}
         </div>
       )}
 
@@ -499,19 +507,19 @@ function SupervisorDashboard({ reportesGlobales }) {
                      </div>
                   </div>
                   <h4 className="font-black text-sm truncate mt-3 uppercase text-slate-800 tracking-tighter">{r.entidad}</h4>
-                  <p className="text-[10px] italic text-slate-400 font-black uppercase truncate mt-0.5 tracking-tight">{r.grado} {r.nombre}</p>
-                  <p className={`text-[11px] font-bold mt-2 leading-relaxed p-2 rounded-2xl ${r.novedad?.toUpperCase() !== 'SIN NOVEDAD' ? 'bg-red-50 text-red-700 border border-red-100 shadow-sm' : 'text-slate-600 bg-slate-50 border border-slate-100'}`}>{r.novedad}</p>
+                  <p className="text-[10px] italic text-slate-400 font-black uppercase truncate mt-0.5 tracking-tight">{r.grado} {String(r.nombre || "")}</p>
+                  <p className={`text-[11px] font-bold mt-2 leading-relaxed p-2 rounded-2xl ${String(r.novedad || "").toUpperCase() !== 'SIN NOVEDAD' ? 'bg-red-50 text-red-700 border border-red-100 shadow-sm' : 'text-slate-600 bg-slate-50 border border-slate-100 shadow-sm'}`}>{String(r.novedad || "")}</p>
                </div>
-               <button onClick={()=>copiar(`*${r.tipo.toUpperCase()}*\n${r.entidad}\nResponsable: ${r.grado} ${r.nombre}\nHora: ${r.horaReferencia}\nNovedad: ${r.novedad}\n"${LEMA}"`)} className="p-4 bg-slate-50 text-emerald-600 rounded-[20px] hover:bg-emerald-600 hover:text-white transition-all shadow-md border border-slate-100 active:scale-90"><Share2 size={24}/></button>
+               <button onClick={()=>copiar(`*${String(r.tipo || "").toUpperCase()}*\n${r.entidad}\nResponsable: ${r.grado} ${String(r.nombre || "")}\nHora: ${r.horaReferencia}\nNovedad: ${String(r.novedad || "")}\n"${LEMA}"`)} className="p-4 bg-slate-50 text-emerald-600 rounded-[20px] hover:bg-emerald-600 hover:text-white transition-all shadow-md border border-slate-100 active:scale-90"><Share2 size={24}/></button>
             </div>
          ))}
          {visibles.length === 0 && (
              <div className="text-center py-24 bg-white rounded-[40px] border-4 border-dashed border-slate-50 shadow-inner">
                  <div className="bg-slate-50 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <Database size={56} className="text-slate-200" />
+                    <Database size={56} className="text-slate-200 mx-auto block" />
                  </div>
-                 <p className="text-slate-400 font-black uppercase text-sm tracking-[0.3em]">Base de Datos Vacía</p>
-                 <p className="text-[10px] text-slate-300 font-bold mt-3 uppercase tracking-widest">Sincronizando con el servidor central...</p>
+                 <p className="text-slate-400 font-black uppercase text-sm tracking-[0.3em] text-center">Base de Datos Vacía</p>
+                 <p className="text-[10px] text-slate-300 font-bold mt-3 uppercase tracking-widest text-center">Sincronizando con el servidor central...</p>
              </div>
          )}
       </div>
