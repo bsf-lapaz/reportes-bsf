@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 
-// --- TUS CREDENCIALES EXACTAS ---
+// TUS CREDENCIALES EXACTAS
 const firebaseConfig = {
   apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
   authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
@@ -14,7 +14,6 @@ const firebaseConfig = {
   measurementId: "G-0GKMSNMB4Q"
 };
 
-// Inicialización mínima
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -22,115 +21,91 @@ const db = getFirestore(app);
 export default function App() {
   const [logs, setLogs] = useState([]);
   const [status, setStatus] = useState('Iniciando...');
-  const [datosNube, setDatosNube] = useState([]);
-  const [user, setUser] = useState(null);
+  const [datos, setDatos] = useState([]);
 
-  // Función para escribir en el registro (log) de pantalla
-  const log = (msg) => setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
+  // Función para registrar pasos
+  const addLog = (msg) => setLogs(prev => [`${new Date().toLocaleTimeString()} - ${msg}`, ...prev]);
 
   useEffect(() => {
-    log("1. Iniciando sistema...");
-    
-    // Paso A: Autenticación
+    // 1. PRUEBA DE AUTENTICACIÓN
+    addLog("Intentando autenticación anónima...");
     signInAnonymously(auth)
-      .then((userCred) => {
-        log(`2. Autenticación EXITOSA. ID: ${userCred.user.uid}`);
-        setUser(userCred.user);
-        setStatus("Conectado y Listo");
+      .then((user) => {
+        addLog(`✅ Autenticado correctamente. ID: ${user.user.uid}`);
+        setStatus("Autenticado");
       })
       .catch((error) => {
-        log(`ERROR CRÍTICO AUTH: ${error.code} - ${error.message}`);
-        setStatus("Fallo de Autenticación");
-        alert("Error: No se pudo entrar. Revisa si 'Anónimo' está habilitado en Firebase.");
+        addLog(`❌ ERROR AUTH: ${error.code} - ${error.message}`);
+        setStatus("Error de Auth");
       });
   }, []);
 
-  // Paso B: Escuchar la base de datos (Lectura)
   useEffect(() => {
-    // Usamos una colección de prueba simple
-    const q = collection(db, "prueba_conexion_bsf");
-    
+    // 2. PRUEBA DE LECTURA (Escuchar cambios)
+    const q = collection(db, "test_conexion_simple");
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const docs = snapshot.docs.map(d => d.data());
-      setDatosNube(docs);
-      log(`4. Lectura de DB: ${docs.length} registros encontrados.`);
+      const docs = snapshot.docs.map(d => ({id: d.id, ...d.data()}));
+      setDatos(docs);
+      addLog(`📡 Lectura recibida: ${docs.length} documentos encontrados.`);
     }, (error) => {
-      console.error(error);
-      log(`ERROR CRÍTICO LECTURA: ${error.code}`);
+      addLog(`❌ ERROR LECTURA: ${error.code} - ${error.message}`);
       if (error.code === 'permission-denied') {
-        alert("ALERTA: Google bloqueó la lectura. FALTAN PERMISOS EN 'RULES'.");
+        alert("ALERTA CRÍTICA: Permiso denegado. Las reglas de Firebase están bloqueando la conexión.");
       }
     });
-
     return () => unsubscribe();
   }, []);
 
-  // Paso C: Escribir (Guardar)
-  const probarGuardado = async () => {
-    if (!user) { alert("Espera a que se conecte el usuario."); return; }
-    
-    log("3. Intentando escribir en la nube...");
+  const probarEscritura = async () => {
+    addLog("Intentando escribir en la base de datos...");
     try {
-      await addDoc(collection(db, "prueba_conexion_bsf"), {
-        mensaje: "Prueba Exitosa",
+      await addDoc(collection(db, "test_conexion_simple"), {
+        mensaje: "Prueba de conexión",
         fecha: new Date().toString(),
-        timestamp: serverTimestamp(),
-        autor: user.uid
+        timestamp: serverTimestamp()
       });
-      log("¡ESCRITURA CONFIRMADA! Google aceptó el dato.");
-      alert("¡FUNCIONA! El sistema guarda correctamente.");
+      addLog("✅ ESCRITURA EXITOSA. El dato se envió a Google.");
+      alert("¡ÉXITO! La conexión funciona. El problema era el código anterior.");
     } catch (e) {
       console.error(e);
-      log(`ERROR CRÍTICO ESCRITURA: ${e.code} - ${e.message}`);
-      alert(`FALLO AL GUARDAR: ${e.code}. \nRevisa las Reglas de Firebase.`);
+      addLog(`❌ ERROR ESCRITURA: ${e.code} - ${e.message}`);
+      alert(`FALLO: ${e.code}. \nRevisa las Reglas de Firebase.`);
     }
   };
 
   return (
-    <div className="p-6 font-mono text-sm bg-gray-100 min-h-screen">
-      <h1 className="text-xl font-bold mb-4 text-blue-900">DIAGNÓSTICO TÉCNICO BSF</h1>
+    <div className="p-8 font-sans max-w-2xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4 text-blue-900">PRUEBA DE CONEXIÓN BSF</h1>
       
-      <div className="bg-white p-4 rounded shadow mb-4 border-l-4 border-blue-500">
-        <p className="mb-2"><strong>Estado:</strong> {status}</p>
+      <div className="bg-white p-6 rounded-lg shadow-lg border-l-8 border-blue-600 mb-6">
+        <p className="font-bold text-gray-700">Estado del Sistema: <span className="text-blue-600">{status}</span></p>
         <button 
-          onClick={probarGuardado}
-          className="bg-blue-600 text-white px-6 py-3 rounded font-bold hover:bg-blue-700 shadow-lg active:scale-95 transition-transform"
+          onClick={probarEscritura}
+          className="mt-4 w-full bg-blue-600 text-white py-4 rounded-lg font-bold text-lg hover:bg-blue-700 transition-colors shadow-md"
         >
-          PROBAR CONEXIÓN AHORA
+          PRESIONAR PARA PROBAR GUARDADO
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* PANEL DE LOGS (Lo que pasa internamente) */}
-        <div className="bg-black text-green-400 p-4 rounded h-64 overflow-auto shadow-inner border border-gray-800">
-          <h3 className="text-white border-b border-gray-700 mb-2 font-bold">REGISTRO DE EVENTOS (LOGS)</h3>
-          {logs.length === 0 && <p className="opacity-50">Esperando eventos...</p>}
+      <div className="grid gap-6">
+        <div className="bg-black text-green-400 p-4 rounded-lg font-mono text-xs h-64 overflow-y-auto shadow-inner">
+          <h3 className="text-white border-b border-gray-700 mb-2 font-bold sticky top-0 bg-black pb-1">BITÁCORA TÉCNICA (LOGS)</h3>
+          {logs.length === 0 && <p className="opacity-50">Esperando acciones...</p>}
           {logs.map((l, i) => <div key={i} className="mb-1 border-b border-gray-900 pb-1">{l}</div>)}
         </div>
 
-        {/* PANEL DE DATOS (Lo que hay en la nube) */}
-        <div className="bg-white p-4 rounded h-64 overflow-auto shadow border border-gray-300">
-          <h3 className="font-bold border-b mb-2 text-slate-700">DATOS EN LA NUBE ({datosNube.length})</h3>
-          {datosNube.length === 0 ? <p className="text-gray-400 italic">La base de datos está vacía o no se puede leer.</p> : 
-            datosNube.map((d, i) => (
-              <div key={i} className="mb-2 p-2 bg-green-50 border border-green-200 text-xs rounded">
+        <div className="bg-gray-100 p-4 rounded-lg h-64 overflow-y-auto border border-gray-200">
+          <h3 className="font-bold text-gray-700 mb-2 border-b pb-1">DATOS EN LA NUBE ({datos.length})</h3>
+          {datos.length === 0 ? <p className="text-gray-400 italic text-sm">La base de datos está vacía o no se puede leer.</p> : 
+            datos.map((d) => (
+              <div key={d.id} className="mb-2 p-3 bg-white border-l-4 border-green-500 rounded shadow-sm text-sm">
                 <span className="font-bold text-green-700">✓ {d.mensaje}</span>
                 <br/>
-                <span className="text-gray-500">{d.fecha}</span>
+                <span className="text-gray-500 text-xs">{d.fecha}</span>
               </div>
             ))
           }
         </div>
-      </div>
-
-      <div className="mt-8 p-4 bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs rounded">
-        <strong>¿Qué debe pasar?</strong>
-        <ul className="list-disc pl-5 mt-1">
-           <li>Al entrar, en la caja negra debe decir "Autenticación EXITOSA".</li>
-           <li>Al tocar el botón azul, debe decir "ESCRITURA CONFIRMADA".</li>
-           <li>Inmediatamente después, debe aparecer un cuadrito verde a la derecha.</li>
-        </ul>
-        <p className="mt-2"><strong>Si sale letras rojas:</strong> Mándame una foto de lo que dice la caja negra.</p>
       </div>
     </div>
   );
