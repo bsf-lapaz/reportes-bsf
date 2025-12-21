@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { 
-  getFirestore, collection, addDoc, query, orderBy, 
+  getFirestore, collection, addDoc, query, 
   onSnapshot, serverTimestamp 
 } from 'firebase/firestore';
 import { 
@@ -11,7 +11,7 @@ import {
   Image as ImageIcon, X, RefreshCw, Zap, User, Database, Lock, Wifi, WifiOff, Share2, AlertCircle, CheckSquare, Calendar 
 } from 'lucide-react';
 
-// --- TUS CREDENCIALES (LAS QUE FUNCIONARON) ---
+// --- TUS CREDENCIALES EXACTAS ---
 const firebaseConfig = {
   apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
   authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
@@ -26,8 +26,8 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Usamos una colección nueva para empezar limpio con la estructura que funciona
-const COLLECTION_NAME = 'reportes_produccion_v1'; 
+// COLECCIÓN ÚNICA Y FINAL
+const COLLECTION_NAME = 'registros_blindados_final'; 
 
 // --- Constantes del Sistema ---
 const AREAS = {
@@ -86,7 +86,7 @@ const EXCEPCIONES_AREA = {
 const LEMA = "INTEGRIDAD, HONESTIDAD Y TRANSPARENCIA AL SERVICIO DE MA SOCIEDAD.";
 
 // --- Utilidades ---
-// Generamos fecha local como STRING FIJO para evitar problemas de zona horaria
+// Fecha en formato texto simple YYYY-MM-DD para evitar problemas de zona horaria
 const obtenerFechaString = (date = new Date()) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -104,11 +104,11 @@ const esHorarioPermitido = (tipo) => {
   const tiempoActual = ahora.getHours() * 60 + ahora.getMinutes(); 
   if (tipo === 'apertura') {
     if (tiempoActual >= 540 && tiempoActual <= 560) return { permitido: true };
-    return { permitido: false, mensaje: "Horario Apertura (09:00 - 09:20)" };
+    return { permitido: false, mensaje: "Fuera de Horario (09:00 - 09:20)" };
   }
   if (tipo === 'cierre') {
     if (tiempoActual >= 960 && tiempoActual <= 980) return { permitido: true };
-    return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
+    return { permitido: false, mensaje: "Fuera de Horario (16:00 - 16:20)" };
   }
   return { permitido: true };
 };
@@ -128,7 +128,7 @@ const procesarImagenSegura = (file) => {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.5));
+        resolve(canvas.toDataURL('image/jpeg', 0.4));
       };
       img.onerror = reject;
       img.src = e.target.result;
@@ -143,88 +143,111 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('login'); 
   const [loading, setLoading] = useState(true);
-  // Estado global para datos (Single Source of Truth)
+  const [dbStatus, setDbStatus] = useState('Conectando...');
+  // ALMACÉN GLOBAL DE DATOS (Single Source of Truth)
   const [todosLosReportes, setTodosLosReportes] = useState([]);
 
   useEffect(() => {
     const initAuth = async () => {
-      try { await signInAnonymously(auth); } catch (error) { console.error("Auth:", error); }
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) { 
+        console.error("Auth Error:", error);
+        setDbStatus(`ERROR AUTH: ${error.code}`);
+      } finally {
+        setLoading(false);
+      }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => { 
-      setUser(u); 
-      setLoading(false); 
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) setDbStatus('Autenticado. Sincronizando datos...');
     });
     return () => unsubscribe();
   }, []);
 
-  // CARGA DE DATOS MAESTRA (Simple y Robusta)
+  // CARGA DE DATOS SIN FILTROS (ESTRATEGIA "TRAER TODO")
   useEffect(() => {
-    // Escuchar TODA la colección sin filtros de servidor para evitar errores de índice
-    // Ordenamos en memoria del cliente
-    const q = collection(db, COLLECTION_NAME);
-    const unsubscribe = onSnapshot(q, (snap) => {
+    if (!user) return;
+    
+    // NOTA TÉCNICA: Usamos collection() directo SIN query() compleja para evitar errores de índice
+    const reportsRef = collection(db, COLLECTION_NAME);
+    
+    const unsubscribe = onSnapshot(reportsRef, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
-      // Ordenar por timestamp descendente
+      // Ordenamos AQUÍ (en el cliente) para no molestar a Google
       docs.sort((a,b) => {
-          const tA = a.timestamp?.seconds || 0;
-          const tB = b.timestamp?.seconds || 0;
-          return tB - tA;
+        const timeA = a.timestamp?.seconds || 0;
+        const timeB = b.timestamp?.seconds || 0;
+        return timeB - timeA;
       });
       setTodosLosReportes(docs);
+      setDbStatus(`ONLINE | ${docs.length} registros seguros`);
     }, (error) => {
-        console.error("Error lectura:", error);
+      console.error("Snapshot Error:", error);
+      setDbStatus(`ERROR DB: ${error.code}. Revise reglas.`);
     });
     return () => unsubscribe();
-  }, []);
+  }, [user]);
 
-  if (loading) return <div className="flex h-screen items-center justify-center bg-slate-900 text-white"><RefreshCw className="animate-spin" /></div>;
+  if (loading) return (
+    <div className="flex h-screen items-center justify-center bg-slate-900 text-white flex-col gap-4">
+      <RefreshCw className="animate-spin text-yellow-500" size={48} />
+      <span className="font-black uppercase tracking-widest text-xs text-center px-10">Conectando Servidor BSF...</span>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-slate-100 font-sans text-slate-900 flex flex-col relative pb-10">
+    <div className="min-h-screen bg-slate-100 font-sans text-slate-900 flex flex-col relative pb-16">
+      <div className={`fixed bottom-0 w-full p-2 text-[10px] text-center z-[60] font-mono font-bold ${dbStatus.includes('ERROR') ? 'bg-red-600 text-white animate-pulse' : 'bg-slate-900 text-green-400'}`}>
+         {dbStatus}
+      </div>
+
       <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-3">
             <Shield className="text-yellow-500 w-8 h-8" />
             <div>
-              <h1 className="font-bold text-lg leading-tight">BATALLÓN DE SEGURIDAD FÍSICA</h1>
-              <p className="text-[10px] text-slate-300">Sistema de Parte Diario</p>
+              <h1 className="font-black text-lg leading-tight uppercase tracking-tighter">Batallón de Seguridad Física</h1>
+              <p className="text-[9px] text-slate-400 font-bold tracking-widest">LA PAZ - BOLIVIA</p>
             </div>
           </div>
-          {view !== 'login' && <button onClick={() => setView('login')} className="text-xs bg-slate-800 p-2 rounded"><LogOut size={16}/></button>}
+          {view !== 'login' && <button onClick={() => setView('login')} className="bg-slate-800 p-2 rounded-xl border border-slate-700 hover:bg-red-900 transition-colors shadow-lg"><LogOut size={18}/></button>}
         </div>
       </header>
 
       <main className="flex-grow max-w-4xl mx-auto w-full p-4">
         {view === 'login' && <LoginScreen setView={setView} />}
-        {view === 'form' && user && <ReportForm user={user} todosLosReportes={todosLosReportes} />}
+        {view === 'form' && user && <ReportForm user={user} todosLosReportes={todosLosReportes} setDbStatus={setDbStatus} />}
         {view === 'dashboard' && user && <SupervisorDashboard todosLosReportes={todosLosReportes} />}
       </main>
-      
-      {/* Barra de estado discreta */}
-      <div className="fixed bottom-0 w-full bg-slate-900 text-slate-500 text-[9px] p-1 text-center">
-          Registros sincronizados: {todosLosReportes.length}
-      </div>
     </div>
   );
 }
 
 function LoginScreen({ setView }) {
   return (
-    <div className="flex flex-col gap-6 py-10 items-center animate-in fade-in">
-      <div className="text-center bg-white p-6 rounded-2xl shadow-xl w-full max-w-sm">
-        <Shield size={60} className="text-blue-900 mx-auto mb-4" />
-        <h2 className="text-2xl font-black text-slate-900 uppercase">Bienvenido</h2>
-        <div className="h-1 w-20 bg-yellow-500 mx-auto my-2"></div>
+    <div className="flex flex-col gap-8 py-10 items-center animate-in fade-in duration-700">
+      <div className="text-center bg-white p-10 rounded-[40px] shadow-2xl w-full max-w-sm border-b-[12px] border-slate-900 relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-2 bg-yellow-500"></div>
+        <div className="bg-slate-50 w-28 h-28 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner border-4 border-white">
+            <Shield size={72} className="text-blue-900" />
+        </div>
+        <h2 className="text-3xl font-black text-slate-900 uppercase tracking-tighter mb-2 text-center">Acceso</h2>
+        <p className="text-[10px] text-slate-400 font-black mb-10 uppercase tracking-[0.2em] text-center">Parte Diario Digital</p>
         
         <div className="space-y-4">
-          <button onClick={() => setView('form')} className="w-full p-4 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-xl flex items-center gap-4 transition-all group border border-blue-100">
-            <div className="bg-white p-2 rounded-full group-hover:bg-blue-800"><UserCheck className="text-blue-900 group-hover:text-white"/></div>
-            <div className="text-left"><span className="block font-bold text-lg">Oficial de Seguridad</span><span className="text-xs opacity-70">Enviar Reportes</span></div>
+          <button onClick={() => setView('form')} className="w-full p-6 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-[24px] flex items-center gap-5 transition-all group border border-blue-100 shadow-sm active:scale-95">
+            <div className="bg-white p-3 rounded-2xl group-hover:bg-blue-800 shadow-md transition-colors"><UserCheck className="text-blue-900 group-hover:text-white" size={24}/></div>
+            <div className="text-left"><span className="block font-black text-sm uppercase tracking-tight">Oficial</span><span className="text-[9px] opacity-60 font-bold uppercase tracking-widest">Enviar Reportes</span></div>
           </button>
-          <button onClick={() => setView('dashboard')} className="w-full p-4 bg-emerald-50 hover:bg-emerald-800 hover:text-white rounded-xl flex items-center gap-4 transition-all group border border-emerald-100">
-            <div className="bg-white p-2 rounded-full group-hover:bg-emerald-700"><ClipboardList className="text-emerald-800 group-hover:text-white"/></div>
-            <div className="text-left"><span className="block font-bold text-lg">Supervisor / Jefe</span><span className="text-xs opacity-70">Ver Novedades</span></div>
+          <button onClick={() => setView('dashboard')} className="w-full p-6 bg-emerald-50 hover:bg-emerald-800 hover:text-white rounded-[24px] flex items-center gap-5 transition-all group border border-emerald-100 shadow-sm active:scale-95">
+            <div className="bg-white p-3 rounded-2xl group-hover:bg-emerald-700 shadow-md transition-colors"><ClipboardList className="text-emerald-800 group-hover:text-white" size={24}/></div>
+            <div className="text-left"><span className="block font-black text-sm uppercase tracking-tight">Supervisor</span><span className="text-[9px] opacity-60 font-bold uppercase tracking-widest">Historial Nube</span></div>
           </button>
         </div>
       </div>
@@ -232,13 +255,12 @@ function LoginScreen({ setView }) {
   );
 }
 
-function ReportForm({ user, todosLosReportes }) {
+function ReportForm({ user, todosLosReportes, setDbStatus }) {
   const [area, setArea] = useState(AREAS.FINANCIERA);
   const [jefatura, setJefatura] = useState('');
   const [entidad, setEntidad] = useState('');
   const [tipo, setTipo] = useState('apertura');
   const [novedad, setNovedad] = useState('SIN NOVEDAD');
-  
   const [grado, setGrado] = useState(localStorage.getItem('bsf_grado') || '');
   const [nombre, setNombre] = useState(localStorage.getItem('bsf_nombre') || '');
   const [foto, setFoto] = useState(null); 
@@ -263,123 +285,148 @@ function ReportForm({ user, todosLosReportes }) {
   }, [grado, nombre]);
 
   useEffect(() => {
-    const jefaturas = Object.keys(ASIGNACIONES[area] || {});
-    if (jefaturas.length > 0) setJefatura(jefaturas[0]);
+    const jefas = Object.keys(ASIGNACIONES[area] || {});
+    if (jefas.length > 0) setJefatura(jefas[0]);
     const h = new Date().getHours();
-    if (h >= 8 && h <= 10) setTipo('apertura');
-    else if (h >= 15 && h <= 17) setTipo('cierre');
+    if (h >= 7 && h <= 11) setTipo('apertura');
+    else if (h >= 15 && h <= 18) setTipo('cierre');
     else setTipo('extraordinario');
   }, [area]);
 
-  // Lógica de pendientes basada en los datos globales (que ya sabemos que cargan)
-  const hoyString = obtenerFechaString();
-  const misReportesHoy = todosLosReportes.filter(r => r.fecha_string === hoyString && r.jefatura === jefatura);
+  // Filtramos la data global (que ya viene del padre App)
+  const hoyStr = obtenerFechaString();
+  const misPartesHoy = (todosLosReportes || []).filter(r => r.fecha_string === hoyStr && r.jefatura === jefatura);
 
   useEffect(() => {
-    const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
-    if (entidadesJefatura.length > 0) {
-       let primeraPendiente = entidadesJefatura[0];
+    const ents = ASIGNACIONES[area][jefatura] || [];
+    if (ents.length > 0) {
+       let prox = ents[0];
        if (tipo !== 'extraordinario') {
-           const pendiente = entidadesJefatura.find(e => !misReportesHoy.some(r => r.entidad === e && r.tipo === tipo));
-           if (pendiente) primeraPendiente = pendiente;
+           const pend = ents.find(e => !misPartesHoy.some(r => r.entidad === e && r.tipo === tipo));
+           if (pend) prox = pend;
        }
-       setEntidad(primeraPendiente);
+       setEntidad(prox);
     }
-  }, [jefatura, area, tipo, misReportesHoy.length]); // Reacciona al cambio de longitud de reportes
+  }, [jefatura, area, tipo, misPartesHoy.length]);
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (file) {
-      try { setFoto(await procesarImagenSegura(file)); } catch (e) { alert("Error foto"); }
+      try { setFoto(await procesarImagenSegura(file)); } catch (e) { alert("Error al procesar foto."); }
     }
   };
 
-  const yaReportado = misReportesHoy.some(r => r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
+  const yaEnv = misPartesHoy.some(r => r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
 
-  const enviarParte = async () => {
-    if (!navigator.onLine) { alert("Sin internet."); return; }
-    if (!grado || !nombre || !foto) { alert("Faltan datos obligatorios."); return; }
-    if (yaReportado) { alert("Ya registrado hoy."); return; }
+  const enviar = async () => {
+    if (!navigator.onLine) { alert("SIN CONEXIÓN: Verifique su internet."); return; }
+    if (!grado || !nombre || !foto) { alert("DATOS INCOMPLETOS: Grado, Nombre y Foto son obligatorios."); return; }
+    if (yaEnv) { alert("ESTA ENTIDAD YA FUE REPORTADA."); return; }
 
     setEnviando(true);
-    const areaFinal = EXCEPCIONES_AREA[entidad] || area;
-    const horaRef = formatearHoraSimple(new Date()); 
-    const fechaString = obtenerFechaString();
-
+    setDbStatus("Sincronizando con la nube...");
+    
     const docData = {
-        area: areaFinal, jefatura, entidad, tipo, novedad, foto, grado, nombre,
-        horaReferencia: horaRef,
-        fecha_string: fechaString,
+        area: EXCEPCIONES_AREA[entidad] || area,
+        jefatura, entidad, tipo, novedad, foto, grado, nombre,
+        horaReferencia: formatearHoraSimple(new Date()),
+        fecha_string: hoyStr,
         timestamp: serverTimestamp(),
         userId: user.uid
     };
 
     try {
-      await addDoc(collection(db, COLLECTION_NAME), docData);
-      alert("✓ GUARDADO CORRECTAMENTE");
+      const reportsRef = collection(db, COLLECTION_NAME);
+      
+      // Enviamos y esperamos confirmación
+      const sendTask = addDoc(reportsRef, docData);
+      const timeoutTask = new Promise((_, reject) => setTimeout(() => reject(new Error("Límite de tiempo excedido")), 20000));
+
+      await Promise.race([sendTask, timeoutTask]);
+      
+      alert("CONFIRMADO: Reporte almacenado en la nube."); 
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
+      setDbStatus("Sincronización OK.");
     } catch (e) {
       console.error(e);
-      alert(`Error al guardar: ${e.message}`);
+      setDbStatus(`ERROR: ${e.message}`);
+      alert(`FALLO DE ENVÍO: ${e.message}. El reporte NO se guardó.`);
+    } finally {
+      setEnviando(false);
     }
-    setEnviando(false);
   };
 
-  const listaEntidades = ASIGNACIONES[area][jefatura] || [];
-  const completados = listaEntidades.filter(e => misReportesHoy.some(r => r.entidad === e && r.tipo === tipo)).length;
-  const progreso = (completados / listaEntidades.length) * 100;
+  const ents = ASIGNACIONES[area][jefatura] || [];
+  const listos = ents.filter(e => misPartesHoy.some(r => r.entidad === e && r.tipo === tipo)).length;
+  const perc = (listos / ents.length) * 100;
 
   return (
-    <div className="space-y-4 max-w-md mx-auto">
-      <div className="bg-white p-5 rounded-2xl shadow-lg border-t-4 border-blue-900">
+    <div className="space-y-4 max-w-md mx-auto animate-in slide-in-from-bottom-4 duration-500">
+      <div className="bg-white p-6 rounded-[32px] shadow-2xl border-t-[10px] border-blue-900">
+         
          {!estadoHorario.permitido && (
-            <div className="bg-amber-50 text-amber-800 p-3 rounded mb-4 text-xs flex items-center gap-2 border border-amber-200">
+            <div className="bg-amber-50 text-amber-800 p-3 rounded-2xl mb-4 text-xs flex items-center gap-2 border border-amber-200 shadow-sm animate-pulse">
                <AlertCircle size={16}/> <span><b>AVISO:</b> Fuera de horario ({estadoHorario.mensaje}).</span>
             </div>
          )}
-         
-         <div className="space-y-3">
-             <div className="flex gap-2">
-                <input className="w-1/3 p-2 border rounded text-xs font-bold uppercase" placeholder="Grado" value={grado} onChange={e=>setGrado(e.target.value)} />
-                <input className="w-2/3 p-2 border rounded text-xs uppercase" placeholder="Nombre Completo" value={nombre} onChange={e=>setNombre(e.target.value)} />
+
+         <div className="space-y-4">
+             <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 flex gap-2">
+                <input className="w-1/3 p-3 border rounded-xl text-xs font-black uppercase shadow-sm focus:ring-2 ring-blue-500 outline-none" placeholder="Grado" value={grado} onChange={e=>setGrado(e.target.value)} />
+                <input className="w-2/3 p-3 border rounded-xl text-xs font-black uppercase shadow-sm focus:ring-2 ring-blue-500 outline-none" placeholder="Nombre Completo" value={nombre} onChange={e=>setNombre(e.target.value)} />
              </div>
+
              <div className="grid grid-cols-2 gap-2">
                 {Object.entries(AREAS).map(([k,v]) => (
-                   <button key={k} onClick={()=>setArea(v)} className={`text-[10px] p-2 rounded border font-bold uppercase ${area===v ? 'bg-blue-900 text-white' : 'bg-slate-50 text-slate-500'}`}>{v.split(' ')[1]}</button>
+                   <button key={k} onClick={()=>setArea(v)} className={`text-[9px] p-3 rounded-xl border font-black uppercase transition-all shadow-sm ${area===v ? 'bg-blue-900 text-white border-blue-900 scale-105' : 'bg-white text-slate-400 border-slate-200'}`}>{v.split(' ')[1] || v}</button>
                 ))}
              </div>
-             <div className="bg-slate-50 p-2 rounded border">
-                <label className="text-[10px] font-bold text-slate-500 block">Jefatura</label>
-                <select className="w-full p-2 bg-white border rounded text-xs font-bold" value={jefatura} onChange={e=>setJefatura(e.target.value)}>
+
+             <div>
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-1 ml-1 block">Jefatura Responsable</label>
+                <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-black uppercase shadow-inner" value={jefatura} onChange={e=>setJefatura(e.target.value)}>
                    {Object.keys(ASIGNACIONES[area]||{}).map(j=><option key={j} value={j}>{j}</option>)}
                 </select>
              </div>
-             <div className={`p-2 rounded border ${yaReportado ? 'bg-green-50 border-green-300' : 'bg-blue-50 border-blue-200'}`}>
-                <label className="text-[10px] font-bold text-slate-500 block">Entidad ({completados}/{listaEntidades.length})</label>
-                <select className="w-full p-2 bg-white border rounded text-xs" value={entidad} onChange={e=>setEntidad(e.target.value)}>
-                   {listaEntidades.map(e => {
-                      const listo = misReportesHoy.some(r => r.entidad === e && r.tipo === tipo);
-                      return <option key={e} value={e}>{listo ? '✅' : '⬜'} {e} {listo ? '(LISTO)' : ''}</option>
+
+             <div className={`p-4 rounded-2xl border-2 transition-all ${yaEnv ? 'bg-green-50 border-green-400' : 'bg-slate-50 border-slate-200 shadow-inner'}`}>
+                <label className="text-[10px] font-black uppercase text-slate-400 mb-1 block">Entidad ({listos}/{ents.length})</label>
+                <select className="w-full p-2 bg-white border border-slate-200 rounded-xl text-xs font-black" value={entidad} onChange={e=>setEntidad(e.target.value)}>
+                   {ents.map(e => {
+                      const l = misPartesHoy.some(r => r.entidad === e && r.tipo === tipo);
+                      return <option key={e} value={e}>{l ? '✅' : '⬜'} {e} {l ? '(COMPLETADO)' : ''}</option>
                    })}
                 </select>
              </div>
-             <div className="grid grid-cols-2 gap-2">
-                <div><label className="text-[10px] font-bold text-slate-500">Tipo</label><select className="w-full p-2 border rounded text-xs font-bold" value={tipo} onChange={e=>setTipo(e.target.value)}><option value="apertura">APERTURA</option><option value="cierre">CIERRE</option><option value="extraordinario">EXTRAORDINARIO</option></select></div>
-                <div><label className="text-[10px] font-bold text-slate-500">Hora</label><div className="w-full p-2 bg-slate-100 border rounded text-xs font-mono text-center font-bold">{horaActual.toLocaleTimeString()}</div></div>
+
+             <div className="grid grid-cols-2 gap-4">
+                <div><label className="text-[10px] font-black uppercase text-slate-400 mb-1 ml-1 block">Turno</label><select className="w-full p-3 border rounded-xl text-xs font-black uppercase bg-white shadow-sm" value={tipo} onChange={e=>setTipo(e.target.value)}><option value="apertura">APERTURA</option><option value="cierre">CIERRE</option><option value="extraordinario">NOVEDAD</option></select></div>
+                <div><label className="text-[10px] font-black uppercase text-slate-400 mb-1 ml-1 block">Reloj Oficial</label><div className="w-full p-3 bg-slate-900 text-green-400 rounded-xl text-xs font-mono text-center font-black shadow-lg border border-slate-800 tracking-wider">{horaReloj.toLocaleTimeString()}</div></div>
              </div>
-             <div><label className="text-[10px] font-bold text-slate-500">Novedad</label><textarea className="w-full p-2 border rounded text-xs" value={novedad} onChange={e=>setNovedad(e.target.value)}/></div>
-             <div className="border-2 border-dashed rounded p-3 text-center">
-                <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handleFile} />
-                {!foto ? <button onClick={()=>fileInputRef.current.click()} className="text-xs font-bold text-blue-800 flex flex-col items-center"><Camera size={24}/> TOMAR FOTO</button> : 
-                <div className="relative"><img src={foto} className="h-32 mx-auto rounded bg-black"/><button onClick={()=>setFoto(null)} className="absolute top-0 right-0 bg-red-600 text-white p-1 rounded-full"><X size={12}/></button></div>}
+
+             <div><label className="text-[10px] font-black uppercase text-slate-400 mb-1 ml-1 block">Descripción</label><textarea className="w-full p-4 border rounded-xl text-xs shadow-inner bg-slate-50 min-h-[90px] font-bold uppercase" value={novedad} onChange={e=>setNovedad(e.target.value)}/></div>
+
+             <div className="border-2 border-dashed border-slate-300 rounded-[24px] p-6 text-center bg-slate-50 group hover:border-blue-400 transition-colors">
+                <input type="file" accept="image/*" capture="environment" className="hidden" ref={fileInputRef} onChange={handleFile} />
+                {!foto ? <button onClick={()=>fileInputRef.current.click()} className="text-xs font-black text-blue-900 flex flex-col items-center gap-3 py-2"><Camera size={44}/> CAPTURAR EVIDENCIA</button> : 
+                <div className="relative group"><img src={foto} className="w-full h-52 object-cover rounded-2xl shadow-2xl border-4 border-white"/><button onClick={()=>setFoto(null)} className="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full shadow-lg hover:scale-110 transition-transform"><X size={20}/></button></div>}
              </div>
-             <button onClick={enviarParte} disabled={enviando || (yaReportado && tipo !== 'extraordinario')} className={`w-full py-4 rounded font-bold text-white text-xs uppercase shadow-lg ${enviando ? 'bg-slate-400' : yaReportado && tipo !== 'extraordinario' ? 'bg-green-600' : 'bg-blue-900'}`}>
-                {enviando ? 'GUARDANDO...' : yaReportado && tipo !== 'extraordinario' ? 'YA REGISTRADO' : 'ENVIAR REPORTE'}
+
+             <button onClick={enviar} disabled={enviando || yaEnv} className={`w-full py-6 rounded-[24px] font-black text-white text-xs uppercase shadow-2xl transition-all flex items-center justify-center gap-3 active:scale-95 ${enviando ? 'bg-slate-400' : yaEnv ? 'bg-green-600' : 'bg-blue-900 hover:bg-blue-800'}`}>
+                {enviando ? <RefreshCw className="animate-spin" size={20}/> : yaEnv ? <CheckCircle size={20}/> : <Zap size={20}/>}
+                {enviando ? 'Sincronizando...' : yaEnv ? 'YA REGISTRADO' : 'ENVIAR A LA NUBE'}
              </button>
+             <p className="text-[9px] text-center font-black text-slate-500 tracking-tighter uppercase italic block">{LEMA}</p>
          </div>
       </div>
-      {tipo !== 'extraordinario' && <div className="h-1 bg-slate-200 rounded overflow-hidden"><div className="h-full bg-green-500 transition-all" style={{width: `${progreso}%`}}></div></div>}
+      {tipo !== 'extraordinario' && (
+          <div className="bg-white p-4 rounded-2xl shadow-xl border-l-8 border-yellow-500 flex items-center justify-between px-6">
+              <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Avance del Turno</span>
+              <div className="flex-grow bg-slate-100 h-2.5 rounded-full overflow-hidden mx-6 shadow-inner"><div className="h-full bg-yellow-500 transition-all duration-1000 ease-out" style={{width: `${perc}%`}}></div></div>
+              <span className="text-xs font-black text-blue-900">{Math.round(perc)}%</span>
+          </div>
+      )}
     </div>
   );
 }
@@ -387,40 +434,37 @@ function ReportForm({ user, todosLosReportes }) {
 function SupervisorDashboard({ todosLosReportes }) {
   const [fecha, setFecha] = useState(obtenerFechaString());
   const [filtro, setFiltro] = useState('todos');
-  const [verTodoHistorial, setVerTodoHistorial] = useState(false);
+  const [verHistorial, setVerHistorial] = useState(false);
   const [modalFoto, setModalFoto] = useState(null);
 
-  // Filtro en memoria usando los datos que ya sabemos que existen
-  const reportesVisibles = todosLosReportes.filter(r => {
+  // Filtro en memoria usando los datos globales
+  const visibles = (todosLosReportes || []).filter(r => {
      if (!r) return false;
-     if (!verTodoHistorial && r.fecha_string !== fecha) return false;
+     if (!verHistorial && r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
      return true;
+  }).sort((a,b) => {
+      const ta = a.timestamp?.seconds || 0;
+      const tb = b.timestamp?.seconds || 0;
+      return tb - ta;
   });
 
-  const copiar = (texto) => {
-    const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); alert("Copiado.");
+  const copiar = (txt) => {
+    const el = document.createElement('textarea'); el.value = txt; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); alert("Copiado al portapapeles.");
   };
 
-  const generarResumen = () => {
+  const generarParte = () => {
     let t = `*REPORTE BSF - ${fecha}*\n\n`;
-    [AREAS.FINANCIERA, AREAS.VIP, AREAS.INSTALACIONES, AREAS.ETV].forEach(areaName => {
-        const reportesArea = reportesVisibles.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === areaName);
-        if(reportesArea.length === 0 && filtro !== 'todos') return;
-        t += `*${areaName}*\n`;
-        if(reportesArea.length === 0) {
-           if(filtro === 'todos') t += "(Pendiente)\n";
-           else t += "Sin novedades.\n";
-        } else {
-           const conNovedad = reportesArea.filter(r => r.novedad?.toUpperCase() !== 'SIN NOVEDAD' && r.novedad !== 'S/N');
-           if (conNovedad.length === 0) t += "Sin novedad.\n";
-           else {
-               conNovedad.forEach(r => {
-                  const hora = r.horaReferencia;
-                  const resp = r.grado ? ` - Resp: ${r.grado} ${r.nombre.split(' ')[0]}` : '';
-                  t += `Con novedad (${hora}): ${r.novedad} (${r.entidad}${resp})\n`;
-               });
-           }
+    [AREAS.FINANCIERA, AREAS.VIP, AREAS.INSTALACIONES, AREAS.ETV].forEach(an => {
+        const ra = visibles.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === an);
+        if(ra.length === 0 && filtro !== 'todos') return;
+        t += `*${an}*\n`;
+        if(ra.length === 0) t += "Sin novedades registradas.\n";
+        else {
+           ra.forEach(r => {
+              const nov = String(r.novedad || "").toUpperCase() !== 'SIN NOVEDAD';
+              t += `${nov ? '⚠ NOVEDAD' : '✓'} (${r.horaReferencia}): ${String(r.novedad || "")} (${r.entidad} - ${r.grado} ${String(r.nombre || "").split(' ')[0]})\n`;
+           });
         }
         t += "\n";
     });
@@ -428,53 +472,94 @@ function SupervisorDashboard({ todosLosReportes }) {
     copiar(t);
   };
 
-  const jefaturasTotales = new Set(Object.values(ASIGNACIONES).flatMap(area => Object.keys(area)));
-  const jefaturasReportadas = new Set(reportesVisibles.map(r => r.jefatura));
-  const oficialesFaltantes = [...jefaturasTotales].filter(j => !jefaturasReportadas.has(j));
+  const jefas = new Set(Object.values(ASIGNACIONES).flatMap(a => Object.keys(a)));
+  const reps = new Set(visibles.map(r => r.jefatura));
+  const falty = [...jefas].filter(j => !reps.has(j));
 
   return (
-    <div className="space-y-4 animate-in fade-in">
-      {modalFoto && <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={()=>setModalFoto(null)}><img src={modalFoto} className="max-w-full max-h-full rounded border-2 border-white"/><button className="absolute top-4 right-4 bg-white p-2 rounded-full"><X/></button></div>}
+    <div className="space-y-4 animate-in fade-in duration-500">
+      {modalFoto && (
+          <div className="fixed inset-0 bg-black/95 z-[100] flex items-center justify-center p-4 backdrop-blur-sm" onClick={()=>setModalFoto(null)}>
+              <div className="relative max-w-2xl w-full">
+                <img src={modalFoto} className="w-full h-auto rounded-3xl border-8 border-white/10 shadow-2xl" />
+                <button className="absolute -top-12 right-0 text-white flex items-center gap-2 font-black uppercase text-xs p-2"><X size={32}/> CERRAR</button>
+              </div>
+          </div>
+      )}
       
-      <div className="bg-white p-4 rounded-xl shadow-md border-l-4 border-emerald-600">
-         <h2 className="font-bold text-lg text-slate-800">Panel de Control</h2>
-         <div className="flex flex-col gap-2 mt-2">
-            <div className="flex gap-2 items-center">
-               <button onClick={()=>setVerTodoHistorial(!verTodoHistorial)} className={`p-2 border rounded ${verTodoHistorial ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`} title="Ver Historial Completo"><Database size={16}/></button>
-               <input type="date" className="p-2 border rounded text-xs flex-grow font-bold" value={fecha} onChange={e=>setFecha(e.target.value)} disabled={verTodoHistorial}/>
-            </div>
-            <select className="p-2 border rounded text-xs uppercase font-bold" value={filtro} onChange={e=>setFiltro(e.target.value)}>
-               <option value="todos">VER TODOS</option>
-               <option value="apertura">SOLO APERTURA</option>
-               <option value="cierre">SOLO CIERRE</option>
-               <option value="extraordinario">SOLO NOVEDADES</option>
-            </select>
-            <button onClick={generarResumen} className="bg-slate-800 text-white p-3 rounded font-bold text-xs flex justify-center gap-2 shadow"><Copy size={14}/> COPIAR PARTE GENERAL</button>
+      <div className="bg-white p-8 rounded-[40px] shadow-2xl border-l-[12px] border-emerald-600">
+         <div className="flex justify-between items-start mb-6 text-center">
+             <div className="w-full">
+                <h2 className="font-black text-2xl text-slate-800 uppercase tracking-tighter text-center">Gestión Central</h2>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1 text-center">Control Histórico de Novedades</p>
+             </div>
+             <button onClick={()=>window.location.reload()} className="p-3 bg-slate-50 rounded-2xl text-slate-500 shadow-sm border border-slate-100 hover:rotate-180 transition-transform duration-500"><RefreshCw size={24}/></button>
          </div>
-         <p className="text-[10px] text-right mt-2 text-slate-400">Total visibles: {reportesVisibles.length}</p>
+
+         <div className="flex flex-col gap-4">
+            <div className="flex gap-3 items-center">
+               <button onClick={()=>setVerHistorial(!verHistorial)} className={`p-4 rounded-2xl transition-all shadow-md ${verHistorial ? 'bg-blue-900 text-white' : 'bg-slate-50 text-slate-400 shadow-inner'}`} title="Historial"><Database size={24}/></button>
+               <div className="relative flex-grow">
+                 <Calendar className="absolute left-4 top-4 text-slate-400" size={18} />
+                 <input type="date" className="w-full p-4 pl-12 border border-slate-100 rounded-2xl text-xs font-black shadow-inner bg-slate-50 outline-none" value={fecha} onChange={e=>setFecha(e.target.value)} disabled={verHistorial}/>
+               </div>
+            </div>
+            <select className="p-4 border border-slate-100 rounded-2xl text-xs uppercase font-black bg-white shadow-sm" value={filtro} onChange={e=>setFiltro(e.target.value)}>
+               <option value="todos">VER TODO</option>
+               <option value="apertura">APERTURA</option>
+               <option value="cierre">CIERRE</option>
+               <option value="extraordinario">NOVEDADES</option>
+            </select>
+            <button onClick={generarParte} className="bg-slate-900 text-white p-5 rounded-[24px] font-black text-xs flex justify-center items-center gap-3 shadow-2xl hover:bg-slate-800 transition-all active:scale-95 uppercase tracking-widest border-b-4 border-slate-700"><Copy size={20}/> Generar Reporte General</button>
+         </div>
       </div>
       
       {(filtro === 'apertura' || filtro === 'cierre') && (
-        <div className={`p-4 rounded-xl shadow border-l-4 ${oficialesFaltantes.length > 0 ? 'bg-red-50 border-red-500 text-red-800' : 'bg-green-50 border-green-500 text-green-800'}`}>
-            <p className="font-bold text-xs uppercase">Faltan {oficialesFaltantes.length} de {jefaturasTotales.size} Oficiales</p>
-            {oficialesFaltantes.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{oficialesFaltantes.map(j => <span key={j} className="text-[9px] bg-white border px-1 rounded">{j}</span>)}</div>}
+        <div className={`p-6 rounded-[32px] shadow-2xl border-b-8 transition-all ${falty.length > 0 ? 'bg-red-50 border-red-500' : 'bg-green-50 border-green-500'}`}>
+            <div className="flex justify-between items-center mb-4">
+                <p className="font-black text-xs uppercase text-slate-700 tracking-wider">Control de Personal</p>
+                <div className="flex flex-col items-end">
+                    <span className="text-2xl font-black text-slate-800">{jefas.size - falty.length}/{jefas.size}</span>
+                    <span className="text-[9px] font-black opacity-40 uppercase">Oficiales</span>
+                </div>
+            </div>
+            {falty.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                    {falty.map(j => <span key={j} className="text-[10px] bg-white border-2 border-red-100 px-3 py-1.5 rounded-xl font-black text-red-600 shadow-sm uppercase tracking-tighter">{j}</span>)}
+                </div>
+            ) : <div className="p-2 bg-green-500 text-white rounded-xl text-center font-black text-[10px] uppercase tracking-widest shadow-lg block w-full">¡Servicio Completo!</div>}
         </div>
       )}
 
-      <div className="space-y-3">
-         {reportesVisibles.map(r => (
-            <div key={r.id} className="bg-white p-3 rounded-xl shadow border-l-4 border-slate-300 flex gap-3 items-start">
-               <div className="w-12 h-12 bg-slate-200 rounded-lg overflow-hidden flex-shrink-0 cursor-pointer" onClick={()=>setModalFoto(r.foto)}><img src={r.foto} className="w-full h-full object-cover" /></div>
-               <div className="flex-grow min-w-0">
-                  <div className="flex justify-between"><span className={`text-[9px] font-bold px-2 rounded bg-slate-100`}>{r.tipo.toUpperCase()}</span><span className="text-[10px] font-mono text-slate-400">{r.horaReferencia}</span></div>
-                  <h4 className="font-bold text-xs truncate mt-1">{r.entidad}</h4>
-                  <p className="text-[9px] italic text-slate-500">{r.grado} {r.nombre}</p>
-                  <p className="text-[10px] text-slate-700 mt-1 leading-tight">{r.novedad}</p>
+      <div className="space-y-4">
+         {visibles.map(r => (
+            <div key={r.id} className="bg-white p-5 rounded-[32px] shadow-xl border-r-[10px] border-slate-100 flex gap-5 items-center group">
+               <div className="w-20 h-20 bg-slate-50 rounded-3xl overflow-hidden flex-shrink-0 cursor-pointer border-4 border-white shadow-lg" onClick={()=>setModalFoto(r.foto)}>
+                  <img src={r.foto} className="w-full h-full object-cover" loading="lazy" />
                </div>
-               <button onClick={()=>copiar(`*${r.tipo.toUpperCase()}*\n${r.entidad}\n${r.novedad}\n${r.horaReferencia}`)} className="text-emerald-600"><Share2 size={18}/></button>
+               <div className="flex-grow min-w-0">
+                  <div className="flex justify-between items-start">
+                     <span className={`text-[10px] font-black px-3 py-1.5 rounded-xl uppercase shadow-md ${r.tipo==='apertura'?'bg-blue-900 text-white':r.tipo==='cierre'?'bg-slate-500 text-white':'bg-red-600 text-white'}`}>{String(r.tipo)}</span>
+                     <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1 rounded-xl border border-slate-100 shadow-inner">
+                        <Clock size={12} className="text-slate-400" />
+                        <span className="text-[11px] font-mono text-slate-500 font-black">{String(r.horaReferencia)}</span>
+                     </div>
+                  </div>
+                  <h4 className="font-black text-sm truncate mt-3 uppercase text-slate-800">{String(r.entidad)}</h4>
+                  <p className="text-[10px] italic text-slate-400 font-black uppercase truncate mt-0.5">{String(r.grado)} {String(r.nombre)}</p>
+                  <p className={`text-[11px] font-bold mt-2 leading-relaxed p-2 rounded-2xl shadow-sm ${String(r.novedad || "").toUpperCase() !== 'SIN NOVEDAD' ? 'bg-red-50 text-red-700 border border-red-100' : 'text-slate-600 bg-slate-50 border border-slate-100'}`}>{String(r.novedad)}</p>
+               </div>
+               <button onClick={()=>copiar(`*${String(r.tipo).toUpperCase()}*\n${String(r.entidad)}\nResponsable: ${String(r.grado)} ${String(r.nombre)}\nHora: ${String(r.horaReferencia)}\nNovedad: ${String(r.novedad)}\n"${LEMA}"`)} className="p-4 bg-slate-50 text-emerald-600 rounded-[20px] hover:bg-emerald-600 hover:text-white transition-all shadow-md active:scale-90"><Share2 size={24}/></button>
             </div>
          ))}
-         {reportesVisibles.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">No hay datos para la fecha seleccionada.</div>}
+         {visibles.length === 0 && (
+             <div className="text-center py-24 bg-white rounded-[40px] border-4 border-dashed border-slate-50 shadow-inner">
+                 <div className="bg-slate-50 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <Database size={56} className="text-slate-200" />
+                 </div>
+                 <p className="text-slate-400 font-black uppercase text-sm tracking-[0.3em]">Nube Vacía</p>
+             </div>
+         )}
       </div>
     </div>
   );
