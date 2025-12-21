@@ -11,7 +11,7 @@ import {
   Image as ImageIcon, X, RefreshCw, Zap, User, Database, Lock, Wifi, WifiOff, Share2, AlertCircle, CheckSquare 
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE ---
+// --- TUS CREDENCIALES EXACTAS ---
 const firebaseConfig = {
   apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
   authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
@@ -25,13 +25,9 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = 'bsf-la-paz-v1';
 
-// RUTA ÚNICA Y CENTRALIZADA
-const COLLECTION_NAME = 'reportes_final_v5'; 
-// En producción, usamos la ruta artifacts para cumplir reglas. 
-// En modo prueba local, a veces es mejor usar la raíz, pero mantendremos la estructura sólida.
-const USE_ARTIFACTS_PATH = true; 
+// RUTA SIMPLE (Directa a la raíz para evitar errores de ruta)
+const COLLECTION_PATH = 'reportes_oficiales_v5'; 
 
 // --- Constantes ---
 const AREAS = {
@@ -102,7 +98,6 @@ const formatearHoraSimple = (fecha) => {
 };
 
 const obtenerHoraLegible = (timestamp, horaReferencia) => {
-  // Prioridad a la hora guardada manualmente para consistencia visual
   if (horaReferencia && horaReferencia.includes(':')) return horaReferencia;
   if (timestamp) {
     return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
@@ -125,24 +120,6 @@ const esHorarioPermitido = (tipo) => {
     return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
   }
   return { permitido: true };
-};
-
-const verificarAuditoria = (reporte) => {
-    if (!reporte.timestamp || !reporte.tipo) return null;
-    const date = new Date(reporte.timestamp.seconds * 1000);
-    const h = date.getHours();
-    const m = date.getMinutes();
-    const tiempoReal = h * 60 + m;
-    const LIMITE_APERTURA = 560; // 09:20
-    const LIMITE_CIERRE = 980;   // 16:20
-
-    if (reporte.tipo === 'apertura' && tiempoReal > LIMITE_APERTURA) {
-        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
-    }
-    if (reporte.tipo === 'cierre' && tiempoReal > LIMITE_CIERRE) {
-        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
-    }
-    return null;
 };
 
 const procesarImagenSegura = (file) => {
@@ -175,13 +152,13 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('login'); 
   const [loading, setLoading] = useState(true);
-  const [dbStatus, setDbStatus] = useState('Iniciando...');
+  const [dbStatus, setDbStatus] = useState('Conectando...');
   const [reportesGlobales, setReportesGlobales] = useState([]);
 
   useEffect(() => {
     const initAuth = async () => {
       try {
-        setDbStatus('Conectando Auth...');
+        setDbStatus('Iniciando Auth...');
         await signInAnonymously(auth);
       } catch (error) { 
         console.error("Auth:", error);
@@ -192,7 +169,7 @@ export default function App() {
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
-      if(u) setDbStatus(`Conectado: ${u.uid.slice(0,5)}...`);
+      if(u) setDbStatus('Autenticado. Conectando DB...');
       setLoading(false); 
     });
     return () => unsubscribe();
@@ -200,20 +177,15 @@ export default function App() {
 
   // MONITOR DE BASE DE DATOS
   useEffect(() => {
-    // Consulta sin filtros para evitar errores de índice
-    const ref = USE_ARTIFACTS_PATH 
-        ? collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME)
-        : collection(db, COLLECTION_NAME);
-    const q = query(ref, orderBy('timestamp', 'desc'));
+    const q = query(collection(db, COLLECTION_PATH), orderBy('timestamp', 'desc'));
     
     const unsubscribe = onSnapshot(q, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
       setReportesGlobales(docs);
-      setDbStatus(prev => `${prev.split('|')[0]} | DB OK: ${docs.length} registros.`);
+      setDbStatus(`SISTEMA ONLINE | ${docs.length} reportes cargados.`);
     }, (error) => {
       console.error("DB Error:", error);
-      // ESTE ES EL MENSAJE QUE NECESITAMOS VER
-      setDbStatus(`ERROR DB CRÍTICO: ${error.code} - ${error.message}`);
+      setDbStatus(`ERROR CRÍTICO DB: ${error.code}. Revise reglas en Firebase.`);
     });
     return () => unsubscribe();
   }, []);
@@ -222,9 +194,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-900 flex flex-col relative pb-16">
-      {/* BARRA DE DIAGNÓSTICO FLOTANTE */}
-      <div className={`fixed top-0 w-full p-1 text-[10px] text-center z-[60] font-mono font-bold ${dbStatus.includes('ERROR') ? 'bg-red-600 text-white animate-pulse' : 'bg-green-800 text-green-100'}`}>
-         SISTEMA: {dbStatus}
+      {/* BARRA DE ESTADO */}
+      <div className={`fixed bottom-0 w-full p-2 text-[10px] text-center z-[60] font-mono font-bold ${dbStatus.includes('ERROR') ? 'bg-red-600 text-white animate-pulse' : 'bg-slate-900 text-green-400'}`}>
+         {dbStatus}
       </div>
 
       <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50 mt-4">
@@ -309,6 +281,7 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
     else setTipo('extraordinario');
   }, [area]);
 
+  // Selección automática y filtrado de reportes de HOY en memoria
   useEffect(() => {
     const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
     const hoyString = obtenerFechaString();
@@ -340,7 +313,7 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
     if (yaReportado) { alert("Ya registrado hoy."); return; }
 
     setEnviando(true);
-    setDebugStatus("Enviando a Firebase...");
+    setDebugStatus("Enviando...");
     
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
     const horaRef = formatearHoraSimple(new Date()); 
@@ -355,20 +328,16 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
     };
 
     try {
-      // Escritura directa
-      const ref = USE_ARTIFACTS_PATH 
-        ? collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME)
-        : collection(db, COLLECTION_NAME);
-        
-      await addDoc(ref, docData);
+      // Escritura directa a colección simple
+      await addDoc(collection(db, COLLECTION_PATH), docData);
       alert("¡GUARDADO CON ÉXITO!"); 
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
-      setDebugStatus("Guardado OK.");
+      setDebugStatus("Datos guardados.");
     } catch (e) {
       console.error(e);
-      setDebugStatus(`ERROR GUARDADO: ${e.code}`);
-      alert(`ERROR CRÍTICO AL GUARDAR: ${e.message}\n\nREVISA: Configuración de Firebase -> Firestore Database -> Rules (Deben ser públicas para pruebas).`);
+      setDebugStatus(`ERROR: ${e.code}`);
+      alert(`ERROR AL GUARDAR: ${e.message}`);
     }
     setEnviando(false);
   };
@@ -376,7 +345,6 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
   const listaEntidades = ASIGNACIONES[area][jefatura] || [];
   const misReportesHoy = reportesGlobales.filter(r => r.fecha_string === obtenerFechaString() && r.jefatura === jefatura);
   const completados = listaEntidades.filter(e => misReportesHoy.some(r => r.entidad === e && r.tipo === tipo)).length;
-  const progreso = (completados / listaEntidades.length) * 100;
 
   return (
     <div className="space-y-4 max-w-md mx-auto">
@@ -427,7 +395,6 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
              </button>
          </div>
       </div>
-      {tipo !== 'extraordinario' && <div className="h-1 bg-slate-200 rounded overflow-hidden"><div className="h-full bg-green-500 transition-all" style={{width: `${progreso}%`}}></div></div>}
     </div>
   );
 }
@@ -438,10 +405,9 @@ function SupervisorDashboard({ reportesGlobales }) {
   const [verTodoHistorial, setVerTodoHistorial] = useState(false);
   const [modalFoto, setModalFoto] = useState(null);
 
-  // Filtro en memoria
   const reportesVisibles = (reportesGlobales || []).filter(r => {
-     if (verTodoHistorial) return true;
-     if (r.fecha_string !== fecha) return false;
+     if (!r) return false;
+     if (!verTodoHistorial && r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
      return true;
   }).sort((a,b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
@@ -456,8 +422,10 @@ function SupervisorDashboard({ reportesGlobales }) {
         const reportesArea = reportesVisibles.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === areaName);
         if(reportesArea.length === 0 && filtro !== 'todos') return;
         t += `*${areaName}*\n`;
-        if(reportesArea.length === 0) t += "Sin novedades registradas.\n";
-        else {
+        if(reportesArea.length === 0) {
+           if(filtro === 'todos') t += "(Pendiente)\n";
+           else t += "Sin novedades.\n";
+        } else {
            const conNovedad = reportesArea.filter(r => r.novedad?.toUpperCase() !== 'SIN NOVEDAD' && r.novedad !== 'S/N');
            if (conNovedad.length === 0) t += "Sin novedad.\n";
            else {
@@ -474,6 +442,7 @@ function SupervisorDashboard({ reportesGlobales }) {
     copiar(t);
   };
 
+  // Faltantes
   const jefaturasTotales = new Set(Object.values(ASIGNACIONES).flatMap(area => Object.keys(area)));
   const jefaturasReportadas = new Set(reportesVisibles.map(r => r.jefatura));
   const oficialesFaltantes = [...jefaturasTotales].filter(j => !jefaturasReportadas.has(j));
