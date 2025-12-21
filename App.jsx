@@ -11,7 +11,7 @@ import {
   Image as ImageIcon, X, RefreshCw, Zap, User, Database, Lock, Wifi, WifiOff, Share2, AlertCircle, CheckSquare 
 } from 'lucide-react';
 
-// --- TUS CREDENCIALES EXACTAS ---
+// --- CONFIGURACIÓN DE FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyBNK_3oIKzaH5M5IyMSyTg6wAAiWzE8cww",
   authDomain: "sistema-de-partes-bsf-lp.firebaseapp.com",
@@ -25,9 +25,10 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const appId = 'bsf-la-paz-v1';
 
-// NUEVA COLECCIÓN LIMPIA V6
-const COLLECTION_PATH = 'reportes_v6_final'; 
+// RUTA TÉCNICA OBLIGATORIA PARA PERSISTENCIA EN GOOGLE
+const COLLECTION_NAME = 'reportes_oficiales_v7'; 
 
 const AREAS = {
   FINANCIERA: "Área Financiera y Bancaria",
@@ -96,49 +97,6 @@ const formatearHoraSimple = (fecha) => {
   return fecha.getHours().toString().padStart(2, '0') + ':' + fecha.getMinutes().toString().padStart(2, '0');
 };
 
-const obtenerHoraLegible = (timestamp, horaReferencia) => {
-  if (horaReferencia && horaReferencia.includes(':')) return horaReferencia;
-  if (timestamp) {
-    return new Date(timestamp.seconds * 1000).toLocaleString('es-BO', {
-      hour: '2-digit', minute: '2-digit', hour12: false
-    });
-  }
-  return "...";
-};
-
-const esHorarioPermitido = (tipo) => {
-  if (tipo === 'extraordinario') return { permitido: true };
-  const ahora = new Date();
-  const tiempoActual = ahora.getHours() * 60 + ahora.getMinutes(); 
-  if (tipo === 'apertura') {
-    if (tiempoActual >= 540 && tiempoActual <= 560) return { permitido: true };
-    return { permitido: false, mensaje: "Horario Apertura (09:00 - 09:20)" };
-  }
-  if (tipo === 'cierre') {
-    if (tiempoActual >= 960 && tiempoActual <= 980) return { permitido: true };
-    return { permitido: false, mensaje: "Horario Cierre (16:00 - 16:20)" };
-  }
-  return { permitido: true };
-};
-
-const verificarAuditoria = (reporte) => {
-    if (!reporte.timestamp || !reporte.tipo) return null;
-    const date = new Date(reporte.timestamp.seconds * 1000);
-    const h = date.getHours();
-    const m = date.getMinutes();
-    const tiempoReal = h * 60 + m;
-    const LIMITE_APERTURA = 560; // 09:20
-    const LIMITE_CIERRE = 980;   // 16:20
-
-    if (reporte.tipo === 'apertura' && tiempoReal > LIMITE_APERTURA) {
-        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
-    }
-    if (reporte.tipo === 'cierre' && tiempoReal > LIMITE_CIERRE) {
-        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
-    }
-    return null;
-};
-
 const procesarImagenSegura = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -175,79 +133,68 @@ export default function App() {
   useEffect(() => {
     const initAuth = async () => {
       try {
-        setDbStatus('Autenticando...');
+        setDbStatus('Iniciando Auth...');
         await signInAnonymously(auth);
       } catch (error) { 
-        console.error("Auth:", error);
+        console.error("Auth Error:", error);
         setDbStatus(`ERROR AUTH: ${error.code}`);
         setLoading(false);
       }
     };
     initAuth();
+    
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
-      if(u) setDbStatus('Autenticado. Buscando DB...');
+      if(u) setDbStatus('Autenticado. Conectando...');
       setLoading(false); 
     });
     return () => unsubscribe();
   }, []);
 
-  // MONITOR DE BASE DE DATOS BLINDADO
+  // CARGA DE DATOS (Solo después de que el usuario esté listo)
   useEffect(() => {
-    // IMPORTANTE: Sin filtros ni ordenamiento en la petición para evitar bloqueos
-    const q = collection(db, COLLECTION_PATH);
+    if (!user) return;
+
+    // RUTA COMPLETA REQUERIDA POR LAS REGLAS DE SEGURIDAD
+    const reportsRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME);
     
-    const unsubscribe = onSnapshot(q, (snap) => {
+    // Consulta plana para evitar errores de índice
+    const unsubscribe = onSnapshot(reportsRef, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
       setReportesGlobales(docs);
-      setDbStatus(`EN LÍNEA | Registros: ${docs.length}`);
+      setDbStatus(`SISTEMA ONLINE | Registros: ${docs.length}`);
     }, (error) => {
-      console.error("DB Error:", error);
-      setDbStatus(`ERROR DB: ${error.code} (Revisar Reglas)`);
+      console.error("Database Error:", error);
+      setDbStatus(`ERROR DB: ${error.code}`);
     });
     return () => unsubscribe();
-  }, []);
+  }, [user]);
 
-  const probarConexion = async () => {
-      setDbStatus("Probando escritura...");
-      try {
-          await addDoc(collection(db, COLLECTION_PATH), {
-              tipo: 'PRUEBA_SISTEMA',
-              fecha_string: obtenerFechaString(),
-              timestamp: serverTimestamp()
-          });
-          alert("¡Conexión Exitosa! El sistema guarda correctamente.");
-      } catch (e) {
-          alert(`FALLO DE ESCRITURA: ${e.code}\n${e.message}`);
-      }
-  };
-
-  if (loading) return <div className="flex h-screen items-center justify-center bg-slate-900 text-white"><RefreshCw className="animate-spin" /></div>;
+  if (loading) return <div className="flex h-screen items-center justify-center bg-slate-900 text-white flex-col gap-4"><RefreshCw className="animate-spin" /><span>Cargando Sistema BSF...</span></div>;
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-900 flex flex-col relative pb-16">
-      {/* BARRA DE DIAGNÓSTICO FLOTANTE */}
-      <div className={`fixed bottom-0 w-full p-2 text-[10px] text-center z-[60] font-mono font-bold flex justify-between items-center px-4 ${dbStatus.includes('ERROR') ? 'bg-red-600 text-white' : 'bg-slate-900 text-green-400'}`}>
-         <span>{dbStatus}</span>
-         {dbStatus.includes('ERROR') && <button onClick={probarConexion} className="bg-white text-red-600 px-2 rounded">PROBAR</button>}
+      {/* BARRA DE ESTADO CRÍTICA */}
+      <div className={`fixed bottom-0 w-full p-2 text-[10px] text-center z-[60] font-mono font-bold ${dbStatus.includes('ERROR') ? 'bg-red-600 text-white animate-pulse' : 'bg-slate-900 text-green-400'}`}>
+         {dbStatus}
       </div>
 
-      <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50 mt-4">
+      <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-3">
             <Shield className="text-yellow-500 w-8 h-8" />
             <div>
-              <h1 className="font-bold text-lg leading-tight">BATALLÓN DE SEGURIDAD FÍSICA</h1>
-              <p className="text-[10px] text-slate-300">Sistema de Parte Diario</p>
+              <h1 className="font-bold text-lg leading-tight uppercase tracking-tighter">Batallón de Seguridad Física</h1>
+              <p className="text-[10px] text-slate-400 tracking-widest font-bold">LA PAZ - BOLIVIA</p>
             </div>
           </div>
-          {view !== 'login' && <button onClick={() => setView('login')} className="text-xs bg-slate-800 p-2 rounded"><LogOut size={16}/></button>}
+          {view !== 'login' && <button onClick={() => setView('login')} className="bg-slate-800 p-2 rounded-lg hover:bg-slate-700 transition-colors"><LogOut size={18}/></button>}
         </div>
       </header>
 
       <main className="flex-grow max-w-4xl mx-auto w-full p-4">
         {view === 'login' && <LoginScreen setView={setView} />}
-        {view === 'form' && user && <ReportForm user={user} reportesGlobales={reportesGlobales} setDebugStatus={setDbStatus} />}
+        {view === 'form' && user && <ReportForm user={user} reportesGlobales={reportesGlobales} setDbStatus={setDbStatus} />}
         {view === 'dashboard' && user && <SupervisorDashboard user={user} reportesGlobales={reportesGlobales} />}
       </main>
     </div>
@@ -256,19 +203,23 @@ export default function App() {
 
 function LoginScreen({ setView }) {
   return (
-    <div className="flex flex-col gap-6 py-10 items-center animate-in fade-in">
-      <div className="text-center bg-white p-6 rounded-2xl shadow-xl w-full max-w-sm">
-        <Shield size={60} className="text-blue-900 mx-auto mb-4" />
-        <h2 className="text-2xl font-black text-slate-900 uppercase">Bienvenido</h2>
-        <div className="h-1 w-20 bg-yellow-500 mx-auto my-2"></div>
+    <div className="flex flex-col gap-6 py-10 items-center animate-in fade-in duration-700">
+      <div className="text-center bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm border-b-8 border-slate-900">
+        <div className="bg-slate-50 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+            <Shield size={64} className="text-blue-900" />
+        </div>
+        <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tighter">Bienvenido</h2>
+        <div className="h-1.5 w-16 bg-yellow-500 mx-auto my-3 rounded-full"></div>
+        <p className="text-xs text-slate-500 font-bold mb-8 uppercase tracking-widest">Control de Parte Diario</p>
+        
         <div className="space-y-4">
-          <button onClick={() => setView('form')} className="w-full p-4 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-xl flex items-center gap-4 transition-all group border border-blue-100">
-            <div className="bg-white p-2 rounded-full group-hover:bg-blue-800"><UserCheck className="text-blue-900 group-hover:text-white"/></div>
-            <div className="text-left"><span className="block font-bold text-lg">Oficial de Seguridad</span><span className="text-xs opacity-70">Enviar Reportes</span></div>
+          <button onClick={() => setView('form')} className="w-full p-5 bg-blue-50 hover:bg-blue-900 hover:text-white rounded-2xl flex items-center gap-4 transition-all group border border-blue-100 shadow-sm active:scale-95">
+            <div className="bg-white p-2 rounded-xl group-hover:bg-blue-800 shadow-sm"><UserCheck className="text-blue-900 group-hover:text-white"/></div>
+            <div className="text-left"><span className="block font-black text-sm uppercase">Oficial</span><span className="text-[10px] opacity-60 font-bold uppercase">Registrar Partes</span></div>
           </button>
-          <button onClick={() => setView('dashboard')} className="w-full p-4 bg-emerald-50 hover:bg-emerald-800 hover:text-white rounded-xl flex items-center gap-4 transition-all group border border-emerald-100">
-            <div className="bg-white p-2 rounded-full group-hover:bg-emerald-700"><ClipboardList className="text-emerald-800 group-hover:text-white"/></div>
-            <div className="text-left"><span className="block font-bold text-lg">Supervisor / Jefe</span><span className="text-xs opacity-70">Ver Novedades</span></div>
+          <button onClick={() => setView('dashboard')} className="w-full p-5 bg-emerald-50 hover:bg-emerald-800 hover:text-white rounded-2xl flex items-center gap-4 transition-all group border border-emerald-100 shadow-sm active:scale-95">
+            <div className="bg-white p-2 rounded-xl group-hover:bg-emerald-700 shadow-sm"><ClipboardList className="text-emerald-800 group-hover:text-white"/></div>
+            <div className="text-left"><span className="block font-black text-sm uppercase">Supervisor</span><span className="text-[10px] opacity-60 font-bold uppercase">Ver Novedades</span></div>
           </button>
         </div>
       </div>
@@ -276,7 +227,7 @@ function LoginScreen({ setView }) {
   );
 }
 
-function ReportForm({ user, reportesGlobales, setDebugStatus }) {
+function ReportForm({ user, reportesGlobales, setDbStatus }) {
   const [area, setArea] = useState(AREAS.FINANCIERA);
   const [jefatura, setJefatura] = useState('');
   const [entidad, setEntidad] = useState('');
@@ -287,18 +238,12 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
   const [foto, setFoto] = useState(null); 
   const [enviando, setEnviando] = useState(false);
   const [horaActual, setHoraActual] = useState(new Date());
-  const [estadoHorario, setEstadoHorario] = useState({ permitido: true });
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    const t = setInterval(() => { 
-        const now = new Date();
-        setHoraActual(now);
-        setEstadoHorario(esHorarioPermitido(tipo));
-    }, 1000);
-    setEstadoHorario(esHorarioPermitido(tipo));
+    const t = setInterval(() => setHoraActual(new Date()), 1000);
     return () => clearInterval(t);
-  }, [tipo]);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('bsf_grado', grado);
@@ -314,12 +259,11 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
     else setTipo('extraordinario');
   }, [area]);
 
+  const hoyString = obtenerFechaString();
+  const misReportesHoy = (reportesGlobales || []).filter(r => r.fecha_string === hoyString && r.jefatura === jefatura);
+
   useEffect(() => {
     const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
-    const hoyString = obtenerFechaString();
-    // Filtro estricto en memoria para evitar errores visuales
-    const misReportesHoy = reportesGlobales.filter(r => r.fecha_string === hoyString && r.jefatura === jefatura);
-
     if (entidadesJefatura.length > 0) {
        let primeraPendiente = entidadesJefatura[0];
        if (tipo !== 'extraordinario') {
@@ -328,25 +272,24 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
        }
        setEntidad(primeraPendiente);
     }
-  }, [jefatura, area, tipo, reportesGlobales]);
+  }, [jefatura, area, tipo, misReportesHoy.length]);
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (file) {
-      try { setFoto(await procesarImagenSegura(file)); } catch (e) { alert("Error foto"); }
+      try { setFoto(await procesarImagenSegura(file)); } catch (e) { alert("Error al procesar foto."); }
     }
   };
 
-  const hoyString = obtenerFechaString();
-  const yaReportado = reportesGlobales.some(r => r.fecha_string === hoyString && r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
+  const yaReportado = misReportesHoy.some(r => r.entidad === entidad && r.tipo === tipo && tipo !== 'extraordinario');
 
   const enviarParte = async () => {
-    if (!navigator.onLine) { alert("Sin internet."); return; }
-    if (!grado || !nombre || !foto) { alert("Faltan datos obligatorios."); return; }
-    if (yaReportado) { alert("Ya registrado hoy."); return; }
+    if (!navigator.onLine) { alert("Sin conexión a internet."); return; }
+    if (!grado || !nombre || !foto) { alert("Complete todos los campos y capture una fotografía."); return; }
+    if (yaReportado) { alert("Este parte ya fue enviado hoy."); return; }
 
     setEnviando(true);
-    setDebugStatus("Enviando...");
+    setDbStatus("Sincronizando con Google...");
     
     const areaFinal = EXCEPCIONES_AREA[entidad] || area;
     const horaRef = formatearHoraSimple(new Date()); 
@@ -361,67 +304,87 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
     };
 
     try {
-      await addDoc(collection(db, COLLECTION_PATH), docData);
-      alert("¡GUARDADO CON ÉXITO!"); 
+      // Escritura forzada a la ruta artifacts
+      const reportsRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME);
+      await addDoc(reportsRef, docData);
+      
+      alert("REPORTE REGISTRADO EN LA BASE DE DATOS."); 
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
-      setDebugStatus("Guardado OK.");
+      setDbStatus("Registro exitoso.");
     } catch (e) {
       console.error(e);
-      setDebugStatus(`ERROR AL GUARDAR: ${e.code}`);
-      alert(`ERROR: ${e.message}\nVerifica reglas en Firebase.`);
+      setDbStatus(`ERROR AL GUARDAR: ${e.code}`);
+      alert(`ERROR TÉCNICO: ${e.message}\nConsulte al administrador del sistema.`);
     }
     setEnviando(false);
   };
 
   const listaEntidades = ASIGNACIONES[area][jefatura] || [];
-  const misReportesHoy = reportesGlobales.filter(r => r.fecha_string === obtenerFechaString() && r.jefatura === jefatura);
   const completados = listaEntidades.filter(e => misReportesHoy.some(r => r.entidad === e && r.tipo === tipo)).length;
+  const progreso = (completados / listaEntidades.length) * 100;
 
   return (
-    <div className="space-y-4 max-w-md mx-auto">
-      <div className="bg-white p-5 rounded-2xl shadow-lg border-t-4 border-blue-900">
-         <div className="space-y-3">
-             <div className="flex gap-2">
-                <input className="w-1/3 p-2 border rounded text-xs font-bold uppercase" placeholder="Grado" value={grado} onChange={e=>setGrado(e.target.value)} />
-                <input className="w-2/3 p-2 border rounded text-xs uppercase" placeholder="Nombre Completo" value={nombre} onChange={e=>setNombre(e.target.value)} />
+    <div className="space-y-4 max-w-md mx-auto animate-in slide-in-from-bottom-4 duration-500">
+      <div className="bg-white p-6 rounded-3xl shadow-xl border-t-8 border-blue-900">
+         <div className="space-y-4">
+             <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                <label className="text-[10px] font-black uppercase text-slate-400 block mb-2 tracking-widest">Responsable del Servicio</label>
+                <div className="flex gap-2">
+                    <input className="w-1/3 p-3 border rounded-xl text-xs font-bold uppercase shadow-sm" placeholder="Grado" value={grado} onChange={e=>setGrado(e.target.value)} />
+                    <input className="w-2/3 p-3 border rounded-xl text-xs uppercase shadow-sm" placeholder="Nombre Completo" value={nombre} onChange={e=>setNombre(e.target.value)} />
+                </div>
              </div>
+
              <div className="grid grid-cols-2 gap-2">
                 {Object.entries(AREAS).map(([k,v]) => (
-                   <button key={k} onClick={()=>setArea(v)} className={`text-[10px] p-2 rounded border font-bold uppercase ${area===v ? 'bg-blue-900 text-white' : 'bg-slate-50 text-slate-500'}`}>{v.split(' ')[1]}</button>
+                   <button key={k} onClick={()=>setArea(v)} className={`text-[9px] p-3 rounded-xl border font-black uppercase transition-all shadow-sm ${area===v ? 'bg-blue-900 text-white border-blue-900 scale-105' : 'bg-white text-slate-400 border-slate-200'}`}>{v.split(' ')[1] || v}</button>
                 ))}
              </div>
-             <div className="bg-slate-50 p-2 rounded border">
-                <label className="text-[10px] font-bold text-slate-500 block">Jefatura</label>
-                <select className="w-full p-2 bg-white border rounded text-xs font-bold" value={jefatura} onChange={e=>setJefatura(e.target.value)}>
+
+             <div>
+                <label className="text-[10px] font-black uppercase text-slate-400 block mb-1 ml-1">Jefatura / Unidad</label>
+                <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-black uppercase shadow-sm" value={jefatura} onChange={e=>setJefatura(e.target.value)}>
                    {Object.keys(ASIGNACIONES[area]||{}).map(j=><option key={j} value={j}>{j}</option>)}
                 </select>
              </div>
-             <div className={`p-2 rounded border ${yaReportado ? 'bg-green-50 border-green-300' : 'bg-blue-50 border-blue-200'}`}>
-                <label className="text-[10px] font-bold text-slate-500 block">Entidad ({completados}/{listaEntidades.length})</label>
-                <select className="w-full p-2 bg-white border rounded text-xs" value={entidad} onChange={e=>setEntidad(e.target.value)}>
+
+             <div className={`p-4 rounded-2xl border-2 transition-all ${yaReportado ? 'bg-green-50 border-green-400' : 'bg-slate-50 border-slate-200'}`}>
+                <label className="text-[10px] font-black uppercase text-slate-400 block mb-1">Entidad ({completados}/{listaEntidades.length})</label>
+                <select className="w-full p-2 bg-white border border-slate-200 rounded-xl text-xs font-bold shadow-inner" value={entidad} onChange={e=>setEntidad(e.target.value)}>
                    {(ASIGNACIONES[area][jefatura]||[]).map(e => {
                       const listo = misReportesHoy.some(r => r.entidad === e && r.tipo === tipo);
                       return <option key={e} value={e}>{listo ? '✅' : '⬜'} {e} {listo ? '(LISTO)' : ''}</option>
                    })}
                 </select>
              </div>
-             <div className="grid grid-cols-2 gap-2">
-                <div><label className="text-[10px] font-bold text-slate-500">Tipo</label><select className="w-full p-2 border rounded text-xs font-bold" value={tipo} onChange={e=>setTipo(e.target.value)}><option value="apertura">APERTURA</option><option value="cierre">CIERRE</option><option value="extraordinario">EXTRAORDINARIO</option></select></div>
-                <div><label className="text-[10px] font-bold text-slate-500">Hora</label><div className="w-full p-2 bg-slate-100 border rounded text-xs font-mono text-center font-bold">{horaActual.toLocaleTimeString()}</div></div>
+
+             <div className="grid grid-cols-2 gap-4">
+                <div><label className="text-[10px] font-black uppercase text-slate-400 block mb-1 ml-1">Tipo</label><select className="w-full p-3 border rounded-xl text-xs font-black uppercase shadow-sm bg-white" value={tipo} onChange={e=>setTipo(e.target.value)}><option value="apertura">APERTURA</option><option value="cierre">CIERRE</option><option value="extraordinario">EXTRAORDINARIO</option></select></div>
+                <div><label className="text-[10px] font-black uppercase text-slate-400 block mb-1 ml-1">Reloj</label><div className="w-full p-3 bg-slate-900 text-green-400 rounded-xl text-xs font-mono text-center font-bold shadow-lg border border-slate-800">{horaActual.toLocaleTimeString()}</div></div>
              </div>
-             <div><label className="text-[10px] font-bold text-slate-500">Novedad</label><textarea className="w-full p-2 border rounded text-xs" value={novedad} onChange={e=>setNovedad(e.target.value)}/></div>
-             <div className="border-2 border-dashed rounded p-3 text-center">
-                <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handleFile} />
-                {!foto ? <button onClick={()=>fileInputRef.current.click()} className="text-xs font-bold text-blue-800 flex flex-col items-center"><Camera size={24}/> TOMAR FOTO</button> : 
-                <div className="relative"><img src={foto} className="h-32 mx-auto rounded bg-black"/><button onClick={()=>setFoto(null)} className="absolute top-0 right-0 bg-red-600 text-white p-1 rounded-full"><X size={12}/></button></div>}
+
+             <div><label className="text-[10px] font-black uppercase text-slate-400 block mb-1 ml-1">Novedad</label><textarea className="w-full p-3 border rounded-xl text-xs shadow-inner bg-slate-50 min-h-[80px]" value={novedad} onChange={e=>setNovedad(e.target.value)}/></div>
+
+             <div className="border-2 border-dashed border-slate-300 rounded-2xl p-4 text-center bg-slate-50">
+                <input type="file" accept="image/*" capture="environment" className="hidden" ref={fileInputRef} onChange={handleFile} />
+                {!foto ? <button onClick={()=>fileInputRef.current.click()} className="text-xs font-black text-blue-900 flex flex-col items-center gap-2 py-4"><Camera size={40}/> CAPTURAR FOTO</button> : 
+                <div className="relative group"><img src={foto} className="w-full h-48 object-cover rounded-xl shadow-2xl"/><button onClick={()=>setFoto(null)} className="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-full shadow-lg"><X size={16}/></button></div>}
              </div>
-             <button onClick={enviarParte} disabled={enviando || (yaReportado && tipo !== 'extraordinario')} className={`w-full py-4 rounded font-bold text-white text-xs uppercase shadow-lg ${enviando ? 'bg-slate-400' : yaReportado && tipo !== 'extraordinario' ? 'bg-green-600' : 'bg-blue-900'}`}>
-                {enviando ? 'GUARDANDO...' : yaReportado && tipo !== 'extraordinario' ? 'YA REGISTRADO' : 'ENVIAR REPORTE'}
+
+             <button onClick={enviarParte} disabled={enviando || (yaReportado && tipo !== 'extraordinario')} className={`w-full py-5 rounded-2xl font-black text-white text-xs uppercase shadow-xl transition-all flex items-center justify-center gap-3 active:scale-95 ${enviando ? 'bg-slate-400' : yaReportado && tipo !== 'extraordinario' ? 'bg-green-600' : 'bg-blue-900 hover:bg-blue-800'}`}>
+                {enviando ? <RefreshCw className="animate-spin"/> : yaReportado && tipo !== 'extraordinario' ? <CheckCircle size={18}/> : <Zap size={18}/>}
+                {enviando ? 'ENVIANDO A LA NUBE...' : yaReportado && tipo !== 'extraordinario' ? 'REPORTE YA ENVIADO' : 'ENVIAR REPORTE OFICIAL'}
              </button>
-             {!estadoHorario.permitido && <div className="text-[10px] text-amber-700 bg-amber-50 p-2 rounded border border-amber-200 text-center font-bold">⚠️ Fuera de Horario</div>}
          </div>
       </div>
+      {tipo !== 'extraordinario' && (
+          <div className="bg-white p-3 rounded-2xl shadow-lg border-l-4 border-yellow-500 flex items-center justify-between px-4">
+              <span className="text-[10px] font-black uppercase text-slate-500">Avance de {tipo}</span>
+              <div className="w-1/2 bg-slate-100 h-2 rounded-full overflow-hidden mx-4"><div className="h-full bg-yellow-500 transition-all duration-1000" style={{width: `${progreso}%`}}></div></div>
+              <span className="text-[10px] font-black text-blue-900">{Math.round(progreso)}%</span>
+          </div>
+      )}
     </div>
   );
 }
@@ -433,15 +396,18 @@ function SupervisorDashboard({ reportesGlobales }) {
   const [modalFoto, setModalFoto] = useState(null);
 
   const reportesVisibles = (reportesGlobales || []).filter(r => {
-     if (r.tipo === 'PRUEBA_SISTEMA') return false; // Ignorar pruebas
-     if (!r) return false;
+     if (!r || r.tipo === 'PRUEBA_SISTEMA') return false;
      if (!verTodoHistorial && r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
      return true;
-  }).sort((a,b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
+  }).sort((a,b) => {
+      const timeA = a.timestamp?.seconds || 0;
+      const timeB = b.timestamp?.seconds || 0;
+      return timeB - timeA;
+  });
 
   const copiar = (texto) => {
-    const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); alert("Copiado.");
+    const el = document.createElement('textarea'); el.value = texto; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); alert("Copiado al portapapeles.");
   };
 
   const generarResumen = () => {
@@ -450,19 +416,12 @@ function SupervisorDashboard({ reportesGlobales }) {
         const reportesArea = reportesVisibles.filter(r => (EXCEPCIONES_AREA[r.entidad] || r.area) === areaName);
         if(reportesArea.length === 0 && filtro !== 'todos') return;
         t += `*${areaName}*\n`;
-        if(reportesArea.length === 0) {
-           if(filtro === 'todos') t += "(Pendiente)\n";
-           else t += "Sin novedades.\n";
-        } else {
-           const conNovedad = reportesArea.filter(r => r.novedad?.toUpperCase() !== 'SIN NOVEDAD' && r.novedad !== 'S/N');
-           if (conNovedad.length === 0) t += "Sin novedad.\n";
-           else {
-               conNovedad.forEach(r => {
-                  const hora = r.horaReferencia;
-                  const resp = r.grado ? ` - Resp: ${r.grado} ${r.nombre.split(' ')[0]}` : '';
-                  t += `Con novedad (${hora}): ${r.novedad} (${r.entidad}${resp})\n`;
-               });
-           }
+        if(reportesArea.length === 0) t += "Sin novedades registradas.\n";
+        else {
+           reportesArea.forEach(r => {
+              const esNovedad = r.novedad?.toUpperCase() !== 'SIN NOVEDAD';
+              t += `${esNovedad ? '⚠ NOVEDAD' : '✓'} (${r.horaReferencia}): ${r.novedad} (${r.entidad} - ${r.grado} ${r.nombre.split(' ')[0]})\n`;
+           });
         }
         t += "\n";
     });
@@ -475,47 +434,73 @@ function SupervisorDashboard({ reportesGlobales }) {
   const oficialesFaltantes = [...jefaturasTotales].filter(j => !jefaturasReportadas.has(j));
 
   return (
-    <div className="space-y-4 animate-in fade-in">
-      {modalFoto && <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={()=>setModalFoto(null)}><img src={modalFoto} className="max-w-full max-h-full rounded border-2 border-white"/><button className="absolute top-4 right-4 bg-white p-2 rounded-full"><X/></button></div>}
-      <div className="bg-white p-4 rounded-xl shadow-md border-l-4 border-emerald-600">
-         <h2 className="font-bold text-lg text-slate-800">Panel de Control</h2>
-         <div className="flex flex-col gap-2 mt-2">
-            <div className="flex gap-2 items-center">
-               <button onClick={()=>setVerTodoHistorial(!verTodoHistorial)} className={`p-2 border rounded ${verTodoHistorial ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'}`} title="Ver Historial Completo"><Database size={16}/></button>
-               <input type="date" className="p-2 border rounded text-xs flex-grow font-bold" value={fecha} onChange={e=>setFecha(e.target.value)} disabled={verTodoHistorial}/>
-            </div>
-            <select className="p-2 border rounded text-xs uppercase font-bold" value={filtro} onChange={e=>setFiltro(e.target.value)}>
-               <option value="todos">VER TODOS</option>
-               <option value="apertura">SOLO APERTURA</option>
-               <option value="cierre">SOLO CIERRE</option>
-               <option value="extraordinario">SOLO NOVEDADES</option>
-            </select>
-            <button onClick={generarResumen} className="bg-slate-800 text-white p-3 rounded font-bold text-xs flex justify-center gap-2 shadow"><Copy size={14}/> COPIAR PARTE GENERAL</button>
+    <div className="space-y-4 animate-in fade-in duration-500">
+      {modalFoto && (
+          <div className="fixed inset-0 bg-black/95 z-[100] flex items-center justify-center p-4" onClick={()=>setModalFoto(null)}>
+              <img src={modalFoto} className="max-w-full max-h-[80vh] rounded-2xl border-4 border-white shadow-2xl shadow-blue-900/40" />
+              <button className="absolute top-10 right-10 bg-white p-3 rounded-full text-red-600 shadow-xl"><X size={32}/></button>
+          </div>
+      )}
+      
+      <div className="bg-white p-6 rounded-3xl shadow-xl border-l-8 border-emerald-600">
+         <div className="flex justify-between items-start mb-4">
+             <h2 className="font-black text-xl text-slate-800 uppercase tracking-tighter">Central de Novedades</h2>
+             <button onClick={()=>window.location.reload()} className="p-2 bg-slate-100 rounded-lg text-slate-500"><RefreshCw size={18}/></button>
          </div>
-         <p className="text-[10px] text-right mt-2 text-slate-400">Total visibles: {reportesVisibles.length}</p>
+         <div className="flex flex-col gap-3">
+            <div className="flex gap-2 items-center">
+               <button onClick={()=>setVerTodoHistorial(!verTodoHistorial)} className={`p-3 border rounded-xl transition-colors ${verTodoHistorial ? 'bg-blue-600 text-white' : 'bg-slate-50 text-slate-400'}`} title="Ver Historial Completo"><Database size={20}/></button>
+               <input type="date" className="p-3 border border-slate-200 rounded-xl text-xs flex-grow font-black shadow-inner" value={fecha} onChange={e=>setFecha(e.target.value)} disabled={verTodoHistorial}/>
+            </div>
+            <select className="p-3 border border-slate-200 rounded-xl text-xs uppercase font-black bg-white shadow-sm" value={filtro} onChange={e=>setFiltro(e.target.value)}>
+               <option value="todos">VER TODOS LOS PARTES</option>
+               <option value="apertura">FILTRAR SOLO APERTURA</option>
+               <option value="cierre">FILTRAR SOLO CIERRE</option>
+               <option value="extraordinario">FILTRAR SOLO NOVEDADES</option>
+            </select>
+            <button onClick={generarResumen} className="bg-slate-900 text-white p-4 rounded-2xl font-black text-xs flex justify-center items-center gap-2 shadow-xl hover:bg-slate-800 transition-transform active:scale-95 uppercase tracking-widest"><Copy size={16}/> Copiar Parte General</button>
+         </div>
       </div>
       
       {(filtro === 'apertura' || filtro === 'cierre') && (
-        <div className={`p-4 rounded-xl shadow border-l-4 ${oficialesFaltantes.length > 0 ? 'bg-red-50 border-red-500 text-red-800' : 'bg-green-50 border-green-500 text-green-800'}`}>
-            <p className="font-bold text-xs uppercase">Faltan {oficialesFaltantes.length} de {jefaturasTotales.size} Oficiales</p>
-            {oficialesFaltantes.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{oficialesFaltantes.map(j => <span key={j} className="text-[9px] bg-white border px-1 rounded">{j}</span>)}</div>}
+        <div className={`p-5 rounded-3xl shadow-xl border-b-4 transition-all ${oficialesFaltantes.length > 0 ? 'bg-red-50 border-red-500' : 'bg-green-50 border-green-500'}`}>
+            <div className="flex justify-between items-center mb-3">
+                <p className="font-black text-[11px] uppercase text-slate-700 tracking-wider">Control de Personal ({filtro})</p>
+                <span className="text-xl font-black text-slate-800">{jefaturasTotales.size - oficialesFaltantes.length}/{jefaturasTotales.size}</span>
+            </div>
+            {oficialesFaltantes.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-1">
+                    {oficialesFaltantes.map(j => <span key={j} className="text-[9px] bg-white border border-red-200 px-2 py-1 rounded-lg font-bold text-red-600 shadow-sm">{j}</span>)}
+                </div>
+            ) : <p className="text-[10px] font-black text-green-700 text-center uppercase tracking-widest">¡PERSONAL COMPLETO!</p>}
         </div>
       )}
 
-      <div className="space-y-3">
+      <div className="space-y-4">
          {reportesVisibles.map(r => (
-            <div key={r.id} className="bg-white p-3 rounded-xl shadow border-l-4 border-slate-300 flex gap-3 items-start">
-               <div className="w-12 h-12 bg-slate-200 rounded-lg overflow-hidden flex-shrink-0 cursor-pointer" onClick={()=>setModalFoto(r.foto)}><img src={r.foto} className="w-full h-full object-cover" /></div>
-               <div className="flex-grow min-w-0">
-                  <div className="flex justify-between"><span className={`text-[9px] font-bold px-2 rounded bg-slate-100`}>{r.tipo.toUpperCase()}</span><span className="text-[10px] font-mono text-slate-400">{r.horaReferencia}</span></div>
-                  <h4 className="font-bold text-xs truncate mt-1">{r.entidad}</h4>
-                  <p className="text-[9px] italic text-slate-500">{r.grado} {r.nombre}</p>
-                  <p className="text-[10px] text-slate-700 mt-1 leading-tight">{r.novedad}</p>
+            <div key={r.id} className="bg-white p-4 rounded-3xl shadow-lg border-r-8 border-slate-200 flex gap-4 items-center hover:translate-x-1 transition-all">
+               <div className="w-16 h-16 bg-slate-100 rounded-2xl overflow-hidden flex-shrink-0 cursor-pointer border-2 border-slate-50 shadow-inner" onClick={()=>setModalFoto(r.foto)}>
+                  <img src={r.foto} className="w-full h-full object-cover" loading="lazy" />
                </div>
-               <button onClick={()=>copiar(`*${r.tipo.toUpperCase()}*\n${r.entidad}\n${r.novedad}\n${r.horaReferencia}`)} className="text-emerald-600"><Share2 size={18}/></button>
+               <div className="flex-grow min-w-0">
+                  <div className="flex justify-between items-start">
+                     <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase shadow-sm ${r.tipo==='apertura'?'bg-blue-900 text-white':r.tipo==='cierre'?'bg-slate-500 text-white':'bg-red-600 text-white'}`}>{r.tipo}</span>
+                     <span className="text-[10px] font-mono text-slate-400 font-bold bg-slate-50 px-2 rounded-lg">{r.horaReferencia}</span>
+                  </div>
+                  <h4 className="font-black text-xs truncate mt-2 uppercase text-slate-800 tracking-tight">{r.entidad}</h4>
+                  <p className="text-[9px] italic text-slate-500 font-bold uppercase truncate">{r.grado} {r.nombre}</p>
+                  <p className={`text-[10px] font-bold mt-1 leading-tight p-1 rounded-lg ${r.novedad?.toUpperCase() !== 'SIN NOVEDAD' ? 'bg-red-50 text-red-700' : 'text-slate-600'}`}>{r.novedad}</p>
+               </div>
+               <button onClick={()=>copiar(`*${r.tipo.toUpperCase()}*\n${r.entidad}\nResp: ${r.grado} ${r.nombre}\nHora: ${r.horaReferencia}\nNovedad: ${r.novedad}\n"${LEMA}"`)} className="p-3 bg-slate-50 text-emerald-600 rounded-2xl hover:bg-emerald-600 hover:text-white transition-all shadow-sm"><Share2 size={20}/></button>
             </div>
          ))}
-         {reportesVisibles.length === 0 && <div className="text-center py-10 text-slate-400 text-xs">No hay datos para la fecha seleccionada.</div>}
+         {reportesVisibles.length === 0 && (
+             <div className="text-center py-20 bg-white rounded-3xl border-4 border-dashed border-slate-100">
+                 <Database size={48} className="mx-auto text-slate-100 mb-4" />
+                 <p className="text-slate-300 font-black uppercase text-sm tracking-widest">Sin datos para mostrar</p>
+                 <p className="text-[10px] text-slate-200 font-bold mt-2">Verifique la fecha o presione el botón de historial</p>
+             </div>
+         )}
       </div>
     </div>
   );
