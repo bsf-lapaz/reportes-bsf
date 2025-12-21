@@ -26,10 +26,9 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// RUTA SIMPLE (Directa a la raíz para evitar errores de ruta)
-const COLLECTION_PATH = 'reportes_oficiales_v5'; 
+// NUEVA COLECCIÓN LIMPIA V6
+const COLLECTION_PATH = 'reportes_v6_final'; 
 
-// --- Constantes ---
 const AREAS = {
   FINANCIERA: "Área Financiera y Bancaria",
   VIP: "Área Seguridad VIP",
@@ -122,6 +121,24 @@ const esHorarioPermitido = (tipo) => {
   return { permitido: true };
 };
 
+const verificarAuditoria = (reporte) => {
+    if (!reporte.timestamp || !reporte.tipo) return null;
+    const date = new Date(reporte.timestamp.seconds * 1000);
+    const h = date.getHours();
+    const m = date.getMinutes();
+    const tiempoReal = h * 60 + m;
+    const LIMITE_APERTURA = 560; // 09:20
+    const LIMITE_CIERRE = 980;   // 16:20
+
+    if (reporte.tipo === 'apertura' && tiempoReal > LIMITE_APERTURA) {
+        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
+    }
+    if (reporte.tipo === 'cierre' && tiempoReal > LIMITE_CIERRE) {
+        return { esTarde: true, horaReal: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}` };
+    }
+    return null;
+};
+
 const procesarImagenSegura = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -158,45 +175,61 @@ export default function App() {
   useEffect(() => {
     const initAuth = async () => {
       try {
-        setDbStatus('Iniciando Auth...');
+        setDbStatus('Autenticando...');
         await signInAnonymously(auth);
       } catch (error) { 
         console.error("Auth:", error);
-        setDbStatus(`Error Auth: ${error.code}`);
+        setDbStatus(`ERROR AUTH: ${error.code}`);
         setLoading(false);
       }
     };
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, (u) => { 
       setUser(u); 
-      if(u) setDbStatus('Autenticado. Conectando DB...');
+      if(u) setDbStatus('Autenticado. Buscando DB...');
       setLoading(false); 
     });
     return () => unsubscribe();
   }, []);
 
-  // MONITOR DE BASE DE DATOS
+  // MONITOR DE BASE DE DATOS BLINDADO
   useEffect(() => {
-    const q = query(collection(db, COLLECTION_PATH), orderBy('timestamp', 'desc'));
+    // IMPORTANTE: Sin filtros ni ordenamiento en la petición para evitar bloqueos
+    const q = collection(db, COLLECTION_PATH);
     
     const unsubscribe = onSnapshot(q, (snap) => {
       const docs = snap.docs.map(d => ({id: d.id, ...d.data()}));
       setReportesGlobales(docs);
-      setDbStatus(`SISTEMA ONLINE | ${docs.length} reportes cargados.`);
+      setDbStatus(`EN LÍNEA | Registros: ${docs.length}`);
     }, (error) => {
       console.error("DB Error:", error);
-      setDbStatus(`ERROR CRÍTICO DB: ${error.code}. Revise reglas en Firebase.`);
+      setDbStatus(`ERROR DB: ${error.code} (Revisar Reglas)`);
     });
     return () => unsubscribe();
   }, []);
+
+  const probarConexion = async () => {
+      setDbStatus("Probando escritura...");
+      try {
+          await addDoc(collection(db, COLLECTION_PATH), {
+              tipo: 'PRUEBA_SISTEMA',
+              fecha_string: obtenerFechaString(),
+              timestamp: serverTimestamp()
+          });
+          alert("¡Conexión Exitosa! El sistema guarda correctamente.");
+      } catch (e) {
+          alert(`FALLO DE ESCRITURA: ${e.code}\n${e.message}`);
+      }
+  };
 
   if (loading) return <div className="flex h-screen items-center justify-center bg-slate-900 text-white"><RefreshCw className="animate-spin" /></div>;
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-900 flex flex-col relative pb-16">
-      {/* BARRA DE ESTADO */}
-      <div className={`fixed bottom-0 w-full p-2 text-[10px] text-center z-[60] font-mono font-bold ${dbStatus.includes('ERROR') ? 'bg-red-600 text-white animate-pulse' : 'bg-slate-900 text-green-400'}`}>
-         {dbStatus}
+      {/* BARRA DE DIAGNÓSTICO FLOTANTE */}
+      <div className={`fixed bottom-0 w-full p-2 text-[10px] text-center z-[60] font-mono font-bold flex justify-between items-center px-4 ${dbStatus.includes('ERROR') ? 'bg-red-600 text-white' : 'bg-slate-900 text-green-400'}`}>
+         <span>{dbStatus}</span>
+         {dbStatus.includes('ERROR') && <button onClick={probarConexion} className="bg-white text-red-600 px-2 rounded">PROBAR</button>}
       </div>
 
       <header className="bg-slate-900 text-white p-4 shadow-lg sticky top-0 z-50 mt-4">
@@ -281,10 +314,10 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
     else setTipo('extraordinario');
   }, [area]);
 
-  // Selección automática y filtrado de reportes de HOY en memoria
   useEffect(() => {
     const entidadesJefatura = ASIGNACIONES[area][jefatura] || [];
     const hoyString = obtenerFechaString();
+    // Filtro estricto en memoria para evitar errores visuales
     const misReportesHoy = reportesGlobales.filter(r => r.fecha_string === hoyString && r.jefatura === jefatura);
 
     if (entidadesJefatura.length > 0) {
@@ -328,16 +361,15 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
     };
 
     try {
-      // Escritura directa a colección simple
       await addDoc(collection(db, COLLECTION_PATH), docData);
       alert("¡GUARDADO CON ÉXITO!"); 
       setNovedad('SIN NOVEDAD');
       if (tipo === 'extraordinario') setFoto(null);
-      setDebugStatus("Datos guardados.");
+      setDebugStatus("Guardado OK.");
     } catch (e) {
       console.error(e);
-      setDebugStatus(`ERROR: ${e.code}`);
-      alert(`ERROR AL GUARDAR: ${e.message}`);
+      setDebugStatus(`ERROR AL GUARDAR: ${e.code}`);
+      alert(`ERROR: ${e.message}\nVerifica reglas en Firebase.`);
     }
     setEnviando(false);
   };
@@ -349,12 +381,6 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
   return (
     <div className="space-y-4 max-w-md mx-auto">
       <div className="bg-white p-5 rounded-2xl shadow-lg border-t-4 border-blue-900">
-         {!estadoHorario.permitido && (
-            <div className="bg-amber-50 text-amber-800 p-3 rounded mb-4 text-xs flex items-center gap-2 border border-amber-200">
-               <AlertCircle size={16}/> <span><b>AVISO:</b> Fuera de horario ({estadoHorario.mensaje}).</span>
-            </div>
-         )}
-         
          <div className="space-y-3">
              <div className="flex gap-2">
                 <input className="w-1/3 p-2 border rounded text-xs font-bold uppercase" placeholder="Grado" value={grado} onChange={e=>setGrado(e.target.value)} />
@@ -393,6 +419,7 @@ function ReportForm({ user, reportesGlobales, setDebugStatus }) {
              <button onClick={enviarParte} disabled={enviando || (yaReportado && tipo !== 'extraordinario')} className={`w-full py-4 rounded font-bold text-white text-xs uppercase shadow-lg ${enviando ? 'bg-slate-400' : yaReportado && tipo !== 'extraordinario' ? 'bg-green-600' : 'bg-blue-900'}`}>
                 {enviando ? 'GUARDANDO...' : yaReportado && tipo !== 'extraordinario' ? 'YA REGISTRADO' : 'ENVIAR REPORTE'}
              </button>
+             {!estadoHorario.permitido && <div className="text-[10px] text-amber-700 bg-amber-50 p-2 rounded border border-amber-200 text-center font-bold">⚠️ Fuera de Horario</div>}
          </div>
       </div>
     </div>
@@ -406,6 +433,7 @@ function SupervisorDashboard({ reportesGlobales }) {
   const [modalFoto, setModalFoto] = useState(null);
 
   const reportesVisibles = (reportesGlobales || []).filter(r => {
+     if (r.tipo === 'PRUEBA_SISTEMA') return false; // Ignorar pruebas
      if (!r) return false;
      if (!verTodoHistorial && r.fecha_string !== fecha) return false;
      if (filtro !== 'todos' && r.tipo !== filtro) return false;
@@ -442,7 +470,6 @@ function SupervisorDashboard({ reportesGlobales }) {
     copiar(t);
   };
 
-  // Faltantes
   const jefaturasTotales = new Set(Object.values(ASIGNACIONES).flatMap(area => Object.keys(area)));
   const jefaturasReportadas = new Set(reportesVisibles.map(r => r.jefatura));
   const oficialesFaltantes = [...jefaturasTotales].filter(j => !jefaturasReportadas.has(j));
